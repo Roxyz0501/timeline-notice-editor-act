@@ -37,12 +37,12 @@ internal static partial class Program
     {
         const string source = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<timeline>\r\n<!-- <i-notice left='5'/> -->\r\n<s name='P1'><a time='12' text='Test'>\r\n <i-notice image='sample.png' note=\" left='90' &gt; \" left = '90' top=\"20\" scale='1'/>\r\n <v-notice text='hello' icon='icon.png'/>\r\n <i-notice image='sample.png'/>\r\n</a><script><![CDATA[<i-notice left='1'/>]]></script></s></timeline>";
         var path = Write("timeline.xml", source); var d = new TimelineDocument(path);
-        Check(d.Notices.Count == 3, "ignore comments and CDATA"); Check(d.Notices[0].Line == 5 && d.Notices[0].Section == "P1", "line and parent context");
+        Check(d.Notices.Count == 2, "ignore comments and CDATA"); Check(d.Notices[0].Line == 5 && d.Notices[0].Section == "P1", "line and parent context");
         Check(d.Render() == source && !d.Dirty, "no-op is byte preserving");
-        d.Notices[0].Set("left", 120.25); d.Notices[2].Set("top", -25);
+        d.Notices[0].Set("left", 120.25); d.Notices[1].Set("top", -25);
         var expected = source.Replace("left = '90'", "left = '120.25'").Replace("<i-notice image='sample.png'/>", "<i-notice image='sample.png' top=\"-25\"/>");
         Check(d.Render() == expected, "only actual attributes changed; attribute-like quoted text preserved");
-        Throws(() => d.Notices[1].Set("left", 5), "v-notice cannot get ineffective XML coordinates");
+        Check(d.Notices.All(n => n.IsImage), "only image notices are selectable");
         Throws(() => d.Notices[0].Set("scale", 0), "invalid scale rejected");
         var backup = d.Save(); Check(File.ReadAllText(backup) == source && File.ReadAllText(path) == expected, "atomic save with exact original backup");
         var changed = new TimelineDocument(path); changed.Notices[0].Set("top", 10); File.AppendAllText(path, " ");
@@ -52,9 +52,7 @@ internal static partial class Program
         var cr = new TimelineDocument(Write("cr.xml", "<timeline>\r<i-notice left='1'/>\r</timeline>")); cr.Notices[0].Set("left", 2); Check(cr.Render().Contains("left='2'"), "CR-only line mapping");
         var defaults = new TimelineDocument(Write("defaults.xml", "<timeline><default target-element='ImageNotice' target-attr='left' value='12'/><i-notice/></timeline>")); Check(defaults.Default(defaults.Notices[0], "left", -1) == 12, "inherited position default");
         Throws(() => TimelineDocument.Parse("<!DOCTYPE timeline [<!ENTITY x SYSTEM 'file:///c:/private'>]><timeline>&x;</timeline>"), "DTD/XXE rejected");
-        var configPath = Write("Timeline.config", "<TimelineConfig><NoticeLeft>100</NoticeLeft><NoticeTop>200</NoticeTop><Other>keep</Other></TimelineConfig>");
-        var config = new VisualSettings(configPath); config.Left = 150; config.Top = 250; var cb = config.Save();
-        Check(File.ReadAllText(cb).Contains("<NoticeLeft>100</NoticeLeft>") && File.ReadAllText(configPath).Contains("<Other>keep</Other>"), "common config backup and unrelated preservation");
+        Check(new TimelineDocument(Write("visual-only.xml", "<timeline><v-notice text='' icon='missing.png'/></timeline>")).Notices.Count == 0, "visual-only XML has no editable notices");
     }
     private static void Images()
     {
@@ -65,7 +63,7 @@ internal static partial class Program
         Check(resolver.Resolve("icon.png", true) == Path.Combine(root, "icon", "nested", "icon.png"), "nested icon search");
         var image = resolver.LoadAsync("sample.png", false, false, CancellationToken.None).GetAwaiter().GetResult(); Check(image.Item1.PixelWidth == 120 && image.Item1.IsFrozen, "decoded image is detached and frozen");
         var doc = new TimelineDocument(Write("render.xml", "<timeline><i-notice image='sample.png'/></timeline>"));
-        var render = NoticePreview.Render(doc.Notices[0], image.Item1, null, .5, "missing"); Check(render.PixelWidth == 66 && render.PixelHeight == 46, "Hojoring pixel dimensions, scale, 3-DIP border");
+        var render = NoticePreview.Render(image.Item1, .5, "missing"); Check(render.PixelWidth == 66 && render.PixelHeight == 46, "Hojoring pixel dimensions, scale, 3-DIP border");
         Throws(() => resolver.LoadAsync("https://example.com/image.png", false, false, CancellationToken.None).GetAwaiter().GetResult(), "remote fetch needs explicit click");
         Throws(() => resolver.LoadAsync("http://example.com/image.png", false, true, CancellationToken.None).GetAwaiter().GetResult(), "HTTP remote rejected");
         Check(resolver.Resolve("not-found.png", false) == null, "missing image safe");
@@ -75,7 +73,7 @@ internal static partial class Program
         foreach (var pair in new[] { new[] { "ja-JP", "ja" }, new[] { "zh-TW", "zh-CN" }, new[] { "ko-KR", "ko" }, new[] { "fr-FR", "en" } }) Check(Localization.MapCulture(new CultureInfo(pair[0])) == pair[1], "culture " + pair[0]);
         var s = new PluginSettings(); Check(s.InitializeLanguageIfMissing(new CultureInfo("ja-JP")), "first language init"); Check(!s.InitializeLanguageIfMissing(new CultureInfo("en-US")) && s.Language == "ja", "saved language retained");
         var old = PluginSettings.Load(Write("old-config.xml", "<PluginSettings><Language>ko</Language></PluginSettings>")); Check(old.Language == "ko" && old.CheckUpdatesOnStartup, "old config defaults");
-        foreach (var lang in new[] { "en", "ja", "zh-CN", "ko" }) { Check(Localization.Get(lang, "SaveGlobal") != "SaveGlobal", "localized global button " + lang); Check(Localization.Get(lang, "FallbackProbe") == "English fallback", "fallback " + lang); }
+        foreach (var lang in new[] { "en", "ja", "zh-CN", "ko" }) { Check(Localization.Get(lang, "SaveXml") != "SaveXml", "localized save button " + lang); Check(Localization.Get(lang, "FallbackProbe") == "English fallback", "fallback " + lang); }
         string error; int opened = 0;
         Check(SettingsControl.TryOpenSupportLink(info => { opened++; Check(info.FileName == "https://ko-fi.com/roxyz0501" && info.UseShellExecute, "support target"); return null; }, out error) && opened == 1, "explicit link launch");
         Check(!SettingsControl.TryOpenSupportLink(info => { throw new IOException(); }, out error), "link failure contained");
@@ -104,11 +102,12 @@ internal static partial class Program
                 position.Value += 10;
                 var saveXml = Descendants(editor).OfType<Button>().Single(b => (string)b.Tag == "SaveXml"); Check(saveXml.Enabled, "editing enables XML save"); saveXml.PerformClick();
                 Check(File.ReadAllText(file).Contains("left='" + position.Value.ToString("0.###", CultureInfo.InvariantCulture) + "'"), "editor save applies selected XML position");
-                var list = Descendants(editor).OfType<ListBox>().Single(); list.SelectedIndex = 1; Application.DoEvents(); position.Value += 10;
-                var saveGlobal = Descendants(editor).OfType<Button>().Single(b => (string)b.Tag == "SaveGlobal"); Check(saveGlobal.Enabled && !saveXml.Enabled, "visual notice edit targets only common config"); saveGlobal.PerformClick();
-                Check(new VisualSettings(configFile).Left == (double)position.Value, "editor saves common position");
-                list.SelectedIndex = 0; Descendants(editor).OfType<CheckBox>().Single(c => (string)c.Tag == "DetailView").Checked = true;
-                deadline = DateTime.UtcNow.AddSeconds(1); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
+                var list = Descendants(editor).OfType<ListBox>().Single();
+                Check(list.Items.Count == 1, "UI lists only i-notice");
+                Check(!Descendants(editor).OfType<Button>().Any(b => (string)b.Tag == "SaveGlobal"), "common config controls removed");
+                Check(File.ReadAllText(configFile) == "<TimelineConfig><NoticeLeft>400</NoticeLeft><NoticeTop>200</NoticeTop><NoticeWidth>404</NoticeWidth></TimelineConfig>", "Timeline.config remains untouched");
+                Check(File.ReadAllText(file).Contains("<v-notice text='Notice' icon='icon.png'/>"), "v-notice preserved on image save");
+                Descendants(editor).OfType<CheckBox>().Single(c => (string)c.Tag == "DetailView").Checked = true;                deadline = DateTime.UtcNow.AddSeconds(1); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
                 using (var b = new Bitmap(form.ClientSize.Width, form.ClientSize.Height)) { form.DrawToBitmap(b, form.ClientRectangle); b.Save(Path.Combine(artifacts, "ui-" + lang + ".png")); }
                 var tabs = Descendants(control).OfType<TabControl>().Single(); Check(tabs.TabPages.Count == 3 && tabs.TabPages[2].Text == Localization.Get(lang, "Support"), "support tab " + lang);
                 foreach (TabPage tab in tabs.TabPages) { tabs.SelectedTab = tab; Application.DoEvents(); Check(tab.Controls.Count > 0, "tab built"); }

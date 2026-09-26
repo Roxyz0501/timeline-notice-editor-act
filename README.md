@@ -1,6 +1,6 @@
 # Timeline Notice Editor for ACT
 
-SPESPE / ACT.HojoringのタイムラインXMLを開き、`i-notice`の画像や`v-notice`のアイコン・文字を見ながら表示位置を調整するACTプラグインです。
+SPESPE / ACT.HojoringのタイムラインXMLを開き、`i-notice`の画像を見ながら表示位置を調整するACTプラグインです。
 
 ## インストール
 
@@ -13,10 +13,11 @@ Windows / ACT / .NET Framework 4.8が必要です。Hojoring DLLへの直接参�
 
 ## 編集と保存
 
+v1.0.1以降はi-notice専用です。既存XML内のv-noticeは保持し、一覧・編集・プレビューの対象にしません。Timeline.configの読み書きも行いません。
+
 - ファイル一覧からXMLを開き、行番号・セクション・時刻・通知内容から目的の通知を選びます。絞り込み検索もできます。
-- 画像はXMLと同じフォルダ、Hojoringの`resources/images`（i-notice）、`resources/icon`（v-notice）のサブフォルダから検索します。絶対パス・相対パス・追加画像フォルダにも対応します。同名が複数で曖昧な場合は通知します。
+- 画像はXMLと同じフォルダ、Hojoringの`resources/images`のサブフォルダから検索します。絶対パス・相対パス・追加画像フォルダにも対応します。同名が複数で曖昧な場合は通知します。
 - **i-notice**：プレビューの金枠をドラッグ、またはX・Y・倍率を入力します。矢印キーは1、Shift+矢印は10移動します。選択通知の`left`・`top`・`scale`だけを変更します。両座標が`-1`の場合はSPESPEと同様に中央配置としてプレビューします。
-- **v-notice**：SPESPEには通知ごとの座標属性がありません。位置は同じフォルダの**Timeline.configのNoticeLeft / NoticeTopで全タイムライン共通**です。「共通位置を保存」を押すとこの設定を変更します。起動中のSPESPEが同じ設定を使用している場合は公開プロパティ経由でメモリ上にも反映し、後の自動保存による巻き戻りを防ぎます。Hojoring側で全オーバーレイが固定されているときは解除が必要です。
 - 「画像を拡大して確認」で画像を大きく表示します。「デスクトップでプレビュー」は実際の画面に重ねます。「固定・クリック透過」でそのプレビューを固定します。プレビューのON/OFFや固定切替は同じウィンドウを維持します。表示は静止画で、継続的な再描画タイマーはありません。
 - 「バックアップしてXML保存」は開いているXMLの変更をまとめて保存します。「位置を元に戻す」は選択通知を最後の読み込み時点へ戻します。ファイルを切り替える前に未保存変更があれば確認します。ACT終了やプラグインのアンロード前には必ず保存してください。
 - XML保存後はSPESPEでタイムラインを再読み込みしてください。SPESPEの自動再読み込み設定によっては自動反映されます。
@@ -25,14 +26,13 @@ Windows / ACT / .NET Framework 4.8が必要です。Hojoring DLLへの直接参�
 
 保存前のファイルは、同じフォルダの`元のファイル名.backup-yyyyMMdd-HHmmss-fff-識別子.bak`に残します。XMLは一時ファイルを検証してからWindowsの原子的置換でバックアップと保存を行います。コメント、CDATA、スクリプト、改行、BOM、選択外の属性は保持します。UTF-8 / UTF-16に対応します。DTD・外部エンティティは拒否します。
 
-外部ソフトによる変更を検出した場合は上書きを止めます。「再読み込み」で最新を開いてから調整してください。保存先に書き込み権限がなければ元ファイルを変更しません。SPESPE動作中の共通設定はSPESPE自身の保存APIを利用するため、その設定ファイルの整形はSPESPEの形式になります。
+外部ソフトによる変更を検出した場合は上書きを止めます。「再読み込み」で最新を開いてから調整してください。保存先に書き込み権限がなければ元ファイルを変更しません。
 
-復元はSPESPEをアンロードした状態で対象の`.bak`を元のXML／`Timeline.config`名へコピーし、SPESPEを再ロードしてください。復元前の現行ファイルも別名で残すと安心です。バックアップは自動削除しません。
+復元はSPESPEをアンロードした状態で対象の`.bak`を元のXML名へコピーし、SPESPEを再ロードしてください。復元前の現行ファイルも別名で残すと安心です。バックアップは自動削除しません。
 
 ### プレビューの範囲
 
 - i-noticeは画像のピクセル寸法×倍率、SPESPEの3 DIP枠余白、WPFのデスクトップ座標を使用します。画像ファイル自体は変更しません。
-- v-noticeは`Timeline.config`の通知スタイル、フォント、文字色、アウトライン、アイコンサイズを参照する近似表示です。独自XAML、動的なジョブアイコン、実行時変数の展開、通知の積み重ね、カウントダウンの進行は再現しません。選択した1件を表示します。
 - 複数モニターの縮小図はACTのDPI基準で描画します。モニターごとにDPIが異なる場合はデスクトッププレビューを使って最終確認してください。
 - URLの画像は自動取得しません。「HTTPS画像を取得」を押した場合に限り取得します。認証情報を含まない直接HTTPS URLのみ対応し、リダイレクトは拒否します。画像は20 MB、32メガピクセルまで、静止画の先頭フレームを表示します。画像が見つからない場合は参照文字列を表示します。
 - タイムラインの内容を操作指示として扱いません。XML内のコードやリンクの自動実行はありません。
@@ -79,7 +79,7 @@ Releaseのファイル名は`TimelineNoticeEditor-vX.Y.Z.zip`と`TimelineNoticeE
 
 ## English summary
 
-An ACT plugin for selecting SPESPE timeline notices, resolving their referenced images, and adjusting positions with numeric controls or draggable previews. Image notices store individual coordinates in XML; visual notices share the global position in Timeline.config. Every save creates a backup. External modifications stop saving. A separate Update tab downloads only explicitly requested, verified GitHub Release packages. Support through Ko-fi is optional and does not change feature availability.
+An ACT plugin for selecting SPESPE timeline notices, resolving their referenced images, and adjusting positions with numeric controls or draggable previews. Only i-notice elements are listed and edited. Existing v-notice elements and Timeline.config are left untouched. Every save creates a backup. External modifications stop saving. A separate Update tab downloads only explicitly requested, verified GitHub Release packages. Support through Ko-fi is optional and does not change feature availability.
 
 ## Compatibility references
 

@@ -25,7 +25,7 @@ namespace TimelineNoticeEditor
             var lines = new List<int> { 0 };
             for (int i = 0; i < File.Text.Length; i++)
                 if (File.Text[i] == '\n' || File.Text[i] == '\r') { if (File.Text[i] == '\r' && i + 1 < File.Text.Length && File.Text[i + 1] == '\n') i++; lines.Add(i + 1); }
-            foreach (var e in Xml.Descendants().Where(e => e.Name.LocalName == "i-notice" || e.Name.LocalName == "v-notice"))
+            foreach (var e in Xml.Descendants().Where(e => e.Name.LocalName == "i-notice"))
             {
                 var info = (IXmlLineInfo)e;
                 var start = lines[info.LineNumber - 1] + info.LinePosition - 2;
@@ -76,7 +76,7 @@ namespace TimelineNoticeEditor
         }
         internal double Default(Notice n, string attribute, double fallback)
         {
-            var type = n.IsImage ? "ImageNotice" : "VisualNotice";
+            var type = "ImageNotice";
             var d = Xml.Root.Elements("default").LastOrDefault(e => string.Equals((string)e.Attribute("target-element"), type, StringComparison.OrdinalIgnoreCase) && (string)e.Attribute("target-attr") == attribute);
             return Notice.Number((string)d?.Attribute("value"), fallback);
         }

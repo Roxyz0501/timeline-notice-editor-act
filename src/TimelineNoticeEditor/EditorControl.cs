@@ -11,7 +11,7 @@ namespace TimelineNoticeEditor
     internal sealed class EditorControl : UserControl
     {
         private readonly PluginSettings settings;
-        private readonly Button folder = B("Folder"), open = B("OpenXml"), images = B("ImageFolder"), save = B("SaveXml"), saveGlobal = B("SaveGlobal"), reset = B("ResetNotice"), reload = B("Reload"), remote = B("LoadRemote");
+        private readonly Button folder = B("Folder"), open = B("OpenXml"), images = B("ImageFolder"), save = B("SaveXml"), reset = B("ResetNotice"), reload = B("Reload"), remote = B("LoadRemote");
         private readonly ComboBox files = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
         private readonly TextBox filter = new TextBox { Width = 190 };
         private readonly ListBox notices = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true, IntegralHeight = false };
@@ -22,7 +22,7 @@ namespace TimelineNoticeEditor
         private readonly PreviewCanvas canvas = new PreviewCanvas();
         private PreviewWindow overlay;
         private TimelineDocument document;
-        private VisualSettings visual;
+
         private Notice selected;
         private BitmapSource loadedImage, rendered;
         private string loadedReference = "";
@@ -47,7 +47,7 @@ namespace TimelineNoticeEditor
             layout.Controls.Add(Flow(xLabel, left, yLabel, top, scaleLabel, scale, reset), 0, 6);
             layout.Controls.Add(Flow(preview, locked, detailView, remote), 0, 7); layout.Controls.Add(canvas, 0, 8);
             imagePath.Dock = DockStyle.Fill; layout.Controls.Add(imagePath, 0, 9);
-            layout.Controls.Add(Flow(save, saveGlobal, reload), 0, 10);
+            layout.Controls.Add(Flow(save, reload), 0, 10);
             message.AutoSize = false; message.Dock = DockStyle.Bottom; message.Height = 75; message.Padding = new Padding(10); message.BackColor = Color.FromArgb(244, 247, 251);
             scroll.Controls.Add(layout); Controls.Add(scroll); Controls.Add(message);
             folder.Click += (s, e) => ChooseFolder(false); images.Click += (s, e) => ChooseFolder(true);
@@ -58,8 +58,8 @@ namespace TimelineNoticeEditor
             preview.CheckedChanged += (s, e) => UpdateOverlay(); locked.CheckedChanged += (s, e) => UpdateOverlay();
             detailView.CheckedChanged += (s, e) => { canvas.DetailView = detailView.Checked; canvas.Invalidate(); };
             canvas.Moved += MoveNotice;
-            reset.Click += (s, e) => { if (selected == null) return; if (selected.IsImage) selected.Changes.Clear(); else if (visual != null) { visual.Left = visual.OriginalLeft; visual.Top = visual.OriginalTop; } FillValues(); Render(); UpdateButtons(); notices.Invalidate(); };
-            save.Click += (s, e) => Save(false); saveGlobal.Click += (s, e) => Save(true);
+            reset.Click += (s, e) => { if (selected == null) return; selected.Changes.Clear(); FillValues(); Render(); UpdateButtons(); notices.Invalidate(); };
+            save.Click += (s, e) => Save();
             reload.Click += (s, e) => { if (document != null) Open(document.File.PathName); };
             remote.Click += (s, e) => LoadImage(true);
             if (!Directory.Exists(settings.TimelineFolder)) settings.TimelineFolder = PluginSettings.DiscoverFolder();
@@ -89,27 +89,24 @@ namespace TimelineNoticeEditor
             catch (Exception ex) { Error(ex); }
             finally { populating = false; path.Text = settings.TimelineFolder; }
         }
-        internal bool ConfirmDiscard() => (document == null || !document.Dirty) && (visual == null || !visual.Dirty) || MessageBox.Show(this, T("Discard"), "Timeline Notice Editor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        internal bool ConfirmDiscard() => (document == null || !document.Dirty) || MessageBox.Show(this, T("Discard"), "Timeline Notice Editor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
         internal bool Open(string filename)
         {
             if (!ConfirmDiscard()) return false;
             try
             {
                 var next = new TimelineDocument(filename);
-                VisualSettings nextVisual = null; var configPath = Path.Combine(Path.GetDirectoryName(filename), "Timeline.config");
-                string warning = null;
-                if (File.Exists(configPath)) { try { nextVisual = new VisualSettings(configPath); } catch { warning = "ConfigUnavailable"; } } else warning = "ConfigUnavailable";
-                Clear(); document = next; visual = nextVisual;
+                Clear(); document = next;
                 settings.TimelineFolder = Path.GetDirectoryName(filename); PopulateFiles();
                 populating = true; files.SelectedItem = Path.GetFileName(filename); populating = false;
                 path.Text = filename; SettingsChanged?.Invoke(this, EventArgs.Empty);
-                PopulateNotices(); Status(warning ?? "Loaded", document.Notices.Count); return true;
+                PopulateNotices(); Status("Loaded", document.Notices.Count); return true;
             }
             catch (Exception ex) { Error(ex); return false; }
         }
         private void Clear()
         {
-            imageCancellation?.Cancel(); selected = null; document = null; visual = null; loadedImage = rendered = null; canvas.SetImage(null); notices.Items.Clear(); UpdateOverlay(); UpdateButtons();
+            imageCancellation?.Cancel(); selected = null; document = null; loadedImage = rendered = null; canvas.SetImage(null); notices.Items.Clear(); UpdateOverlay(); UpdateButtons();
         }
         private void PopulateNotices()
         {
@@ -128,42 +125,42 @@ namespace TimelineNoticeEditor
             populating = true;
             if (selected != null)
             {
-                left.Value = Bound(left, selected.IsImage ? Notice.Number(selected.Get("left"), document.Default(selected, "left", -1)) : visual?.Left ?? 0);
-                top.Value = Bound(top, selected.IsImage ? Notice.Number(selected.Get("top"), document.Default(selected, "top", -1)) : visual?.Top ?? 0);
-                scale.Value = Bound(scale, selected.IsImage ? Notice.Number(selected.Get("scale"), document.Default(selected, "scale", 1)) : 1);
+                left.Value = Bound(left, Notice.Number(selected.Get("left"), document.Default(selected, "left", -1)));
+                top.Value = Bound(top, Notice.Number(selected.Get("top"), document.Default(selected, "top", -1)));
+                scale.Value = Bound(scale, Notice.Number(selected.Get("scale"), document.Default(selected, "scale", 1)));
             }
             populating = false;
         }
         private void UpdateLabels()
         {
             detail.Text = selected == null ? T("SelectNotice") : "L" + selected.Line + "  " + selected.Section + "  " + selected.Time + "  " + selected.Context;
-            scope.Text = selected == null ? T("EditorHint") : T(selected.IsImage ? "ImageScope" : "GlobalScope");
+            scope.Text = selected == null ? T("EditorHint") : T("ImageScope");
         }
         private void UpdateButtons()
         {
-            save.Enabled = document?.Dirty == true; saveGlobal.Enabled = visual?.Dirty == true;
-            left.Enabled = top.Enabled = selected != null && (selected.IsImage || visual != null);
+            save.Enabled = document?.Dirty == true;
+            left.Enabled = top.Enabled = selected != null;
             scale.Enabled = selected?.IsImage == true; reset.Enabled = selected != null; reload.Enabled = document != null;
         }
         private void ChangePosition(object sender, EventArgs e)
         {
             if (populating || selected == null) return;
-            if (selected.IsImage) { selected.Set("left", (double)left.Value); selected.Set("top", (double)top.Value); }
-            else if (visual != null) { visual.Left = (double)left.Value; visual.Top = (double)top.Value; }
+            selected.Set("left", (double)left.Value); selected.Set("top", (double)top.Value);
+
             UpdatePosition(); UpdateButtons(); notices.Invalidate();
         }
         private void ChangeScale(object sender, EventArgs e) { if (populating || selected?.IsImage != true) return; selected.Set("scale", (double)scale.Value); Render(); UpdateButtons(); notices.Invalidate(); }
         private void MoveNotice(double x, double y)
         {
-            if (selected == null || (!selected.IsImage && visual == null)) return;
+            if (selected == null) return;
             populating = true; left.Value = Bound(left, x); top.Value = Bound(top, y); populating = false; ChangePosition(null, EventArgs.Empty);
         }
         private async void LoadImage(bool allowRemote)
         {
             imageCancellation?.Cancel(); imageCancellation?.Dispose(); imageCancellation = new CancellationTokenSource(); var token = imageCancellation.Token;
             var notice = selected; if (notice == null || document == null) return;
-            var reference = notice.Get(notice.IsImage ? "image" : "icon");
-            if (!notice.IsImage && reference.Length == 0) reference = (string)visual?.Style(notice)?.Element("Icon") ?? "";
+            var reference = notice.Get("image");
+
             loadedReference = reference; imagePath.Text = T("LoadingImage");
             try
             {
@@ -178,7 +175,7 @@ namespace TimelineNoticeEditor
         private void Render()
         {
             if (selected == null) return;
-            try { rendered = NoticePreview.Render(selected, loadedImage, visual, (double)scale.Value, T("MissingImage", loadedReference)); canvas.SetImage(rendered); UpdatePosition(); }
+            try { rendered = NoticePreview.Render(loadedImage, (double)scale.Value, T("MissingImage", loadedReference)); canvas.SetImage(rendered); UpdatePosition(); }
             catch (Exception ex) { rendered = null; canvas.SetImage(null); UpdateOverlay(); Error(ex); }
         }
         private void UpdatePosition()
@@ -195,25 +192,19 @@ namespace TimelineNoticeEditor
             if (preview.Checked && rendered != null && overlay == null) { overlay = new PreviewWindow(); overlay.Moved += MoveNotice; }
             overlay?.Present(rendered, canvas.X, canvas.Y, preview.Checked, locked.Checked);
         }
-        private void Save(bool global)
+        private void Save()
         {
             try
             {
-                if (global)
-                {
-                    if (visual == null || !visual.Dirty) return;
-                    var backup = visual.Save(); visual = new VisualSettings(visual.File.PathName); Status("SavedGlobal", backup);
-                }
-                else
-                {
-                    if (document == null || !document.Dirty) return;
-                    int index = selected?.Id ?? 1; var backup = document.Save(); document = new TimelineDocument(document.File.PathName); selected = document.Notices.FirstOrDefault(n => n.Id == index); PopulateNotices(); Status("SavedXml", backup);
-                }
-                UpdateButtons();
+                if (document == null || !document.Dirty) return;
+                int index = selected?.Id ?? 1;
+                var backup = document.Save();
+                document = new TimelineDocument(document.File.PathName);
+                selected = document.Notices.FirstOrDefault(n => n.Id == index);
+                PopulateNotices(); Status("SavedXml", backup); UpdateButtons();
             }
             catch (Exception ex) { Error(ex); }
-        }
-        private void Error(Exception ex) { var key = ex.GetBaseException().Message; Status("OperationFailed", T(key) == key ? T("FileProblem") + " (" + ex.GetBaseException().GetType().Name + ")" : T(key)); }
+        }        private void Error(Exception ex) { var key = ex.GetBaseException().Message; Status("OperationFailed", T(key) == key ? T("FileProblem") + " (" + ex.GetBaseException().GetType().Name + ")" : T(key)); }
         private static Label L() => new Label { AutoSize = false, Width = 60, Height = 32, ForeColor = Color.FromArgb(48, 61, 80), TextAlign = ContentAlignment.MiddleLeft };
         private static Button B(string key) => new Button { Tag = key, AutoSize = true, MinimumSize = new Size(100, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(244, 247, 251), ForeColor = Color.FromArgb(48, 61, 80), Margin = new Padding(3) };
         private static NumericUpDown N(decimal min, decimal max, decimal increment) => new NumericUpDown { Minimum = min, Maximum = max, Increment = increment, DecimalPlaces = 2, Width = 105 };

@@ -93,37 +93,10 @@ namespace TimelineNoticeEditor
 
     internal static class NoticePreview
     {
-        internal static BitmapSource Render(Notice notice, BitmapSource image, VisualSettings config, double scale, string missing)
+        internal static BitmapSource Render(BitmapSource image, double scale, string missing)
         {
             var visual = new DrawingVisual();
             double width = image?.PixelWidth ?? 280, height = image?.PixelHeight ?? 80;
-            if (!notice.IsImage)
-            {
-                var style = config?.Style(notice);
-                var factor = config == null ? 1 : config.Value("OverlayScale", 1);
-                factor = Math.Max(0.1, Math.Min(5, factor));
-                var fontSize = Math.Max(6, Math.Min(200, Notice.Number((string)style?.Element("Font")?.Attribute("Size"), 32) * Notice.Number(notice.Get("font-scale"), 1))) * factor;
-                var iconSize = Math.Max(8, Math.Min(512, Notice.Number((string)style?.Element("IconSize"), 32))) * factor;
-                var family = (string)style?.Element("Font")?.Attribute("FontFamily") ?? "Yu Gothic UI";
-                var text = new FormattedText(notice.Get("text"), CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                    new Typeface(new FontFamily(family), FontStyles.Normal, (string)style?.Element("Font")?.Attribute("Weight") == "Bold" ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal), fontSize, ColorBrush((string)style?.Element("Color"), Colors.White), 1);
-                width = Math.Max(80, Math.Min(4000, config?.Value("NoticeWidth", 404) ?? 404));
-                var contentHeight = Math.Max(image == null ? 0 : iconSize, text.Height);
-                height = Math.Max(48, 32 * factor + contentHeight);
-                using (var dc = visual.RenderOpen())
-                {
-                    double x = 16 * factor, y = 16 * factor;
-                    if (image != null) { dc.DrawImage(image, new Rect(x, y + (contentHeight - iconSize) / 2, iconSize, iconSize)); x += iconSize + 5 * factor; }
-                    var geometry = text.BuildGeometry(new Point(x, y + (contentHeight - text.Height) / 2));
-                    dc.DrawGeometry(ColorBrush((string)style?.Element("Color"), Colors.White), new Pen(ColorBrush((string)style?.Element("OutlineColor"), Colors.Black), 1.5), geometry);
-                    if (notice.Get("duration-visible") != "false")
-                    {
-                        var duration = new FormattedText(notice.Get("duration") == "" ? "5.0" : notice.Get("duration"), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), fontSize, ColorBrush((string)style?.Element("Color"), Colors.White), 1);
-                        dc.DrawText(duration, new Point(Math.Max(x + text.Width + 10, width - duration.Width - 16), y));
-                    }
-                }
-            }
-            else
             {
                 width = width * scale + 6; height = height * scale + 6;
                 if (width > 8000 || height > 8000 || width * height > 32 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge");
