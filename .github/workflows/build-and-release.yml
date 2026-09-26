@@ -1,0 +1,66 @@
+name: build-and-release
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Download official ACT
+        shell: pwsh
+        run: |
+          $headers = @{
+            Cookie = 'humans_21909=1'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TimelineNoticeEditor-CI/1.0'
+          }
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest 'https://advancedcombattracker.com/download.php?id=57' -Headers $headers -OutFile act.zip
+              $signature = [IO.File]::ReadAllBytes('act.zip')[0..1]
+              if ($signature[0] -ne 0x50 -or $signature[1] -ne 0x4B) { throw 'ACT download is not a ZIP archive.' }
+              break
+            } catch {
+              Remove-Item act.zip -ErrorAction SilentlyContinue
+              if ($attempt -eq 3) { throw }
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+      - name: Extract ACT
+        shell: pwsh
+        run: Expand-Archive act.zip act
+      - name: Build and test
+        shell: pwsh
+        run: .\build.ps1 -ActPath (Resolve-Path '.\act\Advanced Combat Tracker.exe')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-assets
+          path: dist/TimelineNoticeEditor-v*
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify tag and assets
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          if (-not (Test-Path "dist/TimelineNoticeEditor-v$version.zip")) { throw 'Versioned ZIP is missing.' }
+          if (-not (Test-Path "dist/TimelineNoticeEditor-v$version.sha256")) { throw 'SHA-256 manifest is missing.' }
+          ./verify-release.ps1 -ZipPath "dist/TimelineNoticeEditor-v$version.zip" -Version $version
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create '${{ github.ref_name }}' dist/* --verify-tag --generate-notes --title '${{ github.ref_name }}'
