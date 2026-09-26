@@ -33,10 +33,11 @@ internal static partial class Program
     private static void Check(bool ok, string name) { if (!ok) throw new Exception("FAIL: " + name); checks++; }
     private static void Throws(Action action, string name) { try { action(); } catch { checks++; return; } throw new Exception("FAIL: " + name); }
     private static string Write(string name, string text, Encoding encoding = null) { var path = Path.Combine(artifacts, name); Directory.CreateDirectory(Path.GetDirectoryName(path)); File.WriteAllText(path, text, encoding ?? new UTF8Encoding(false)); return path; }
+    private static TimelineDocument Document(string path) => new TimelineDocument(path, Path.Combine(artifacts, "Plugin", "Backups", "Timeline"));
     private static void XmlSafety()
     {
         const string source = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<timeline>\r\n<!-- <i-notice left='5'/> -->\r\n<s name='P1'><a time='12' text='Test'>\r\n <i-notice image='sample.png' note=\" left='90' &gt; \" left = '90' top=\"20\" scale='1'/>\r\n <v-notice text='hello' icon='icon.png'/>\r\n <i-notice image='sample.png'/>\r\n</a><script><![CDATA[<i-notice left='1'/>]]></script></s></timeline>";
-        var path = Write("timeline.xml", source); var d = new TimelineDocument(path);
+        var path = Write("timeline.xml", source); var d = Document(path);
         Check(d.Notices.Count == 2, "ignore comments and CDATA"); Check(d.Notices[0].Line == 5 && d.Notices[0].Section == "P1", "line and parent context");
         Check(d.Render() == source && !d.Dirty, "no-op is byte preserving");
         d.Notices[0].Set("left", 120.25); d.Notices[1].Set("top", -25);
@@ -44,15 +45,27 @@ internal static partial class Program
         Check(d.Render() == expected, "only actual attributes changed; attribute-like quoted text preserved");
         Check(d.Notices.All(n => n.IsImage), "only image notices are selectable");
         Throws(() => d.Notices[0].Set("scale", 0), "invalid scale rejected");
-        var backup = d.Save(); Check(File.ReadAllText(backup) == source && File.ReadAllText(path) == expected, "atomic save with exact original backup");
-        var changed = new TimelineDocument(path); changed.Notices[0].Set("top", 10); File.AppendAllText(path, " ");
+        var backup = d.Save(); Check(File.ReadAllText(backup) == source && File.ReadAllText(path) == expected, "save with exact original backup");
+        Check(backup.StartsWith(Path.Combine(artifacts, "Plugin", "Backups"), StringComparison.OrdinalIgnoreCase), "backup only in plugin directory");
+        Check(Directory.GetFiles(artifacts, "*.bak").Length == 0 && Directory.GetFiles(artifacts, "*.tmp").Length == 0, "no source sidecar backup or temp files");
+        var rollbackPath = Write("isolated/source.xml", "<timeline><i-notice left='1'/></timeline>");
+        var rollback = Document(rollbackPath); rollback.Notices[0].Set("left", 2);
+        Throws(() => rollback.File.Save(rollback.Render(), (stream, bytes) => { stream.WriteByte(0); throw new IOException("simulated write failure"); }), "failed write reported");
+        Check(File.ReadAllText(rollbackPath) == "<timeline><i-notice left='1'/></timeline>", "failed write restores original under lock");
+        var blocked = Write("blocked-backup", "not a directory");
+        Throws(() => rollback.Save(blocked), "unwritable backup path stops save");
+        Check(File.ReadAllText(rollbackPath) == "<timeline><i-notice left='1'/></timeline>" && Directory.GetFiles(Path.GetDirectoryName(rollbackPath)).Length == 1, "backup failure leaves source intact and directory clean");
+        var other = Document(Write("other/source.xml", "<timeline><i-notice left='3'/></timeline>")); other.Notices[0].Set("left", 4);
+        var otherBackup = other.Save(); var firstBackup = rollback.Save();
+        Check(Path.GetDirectoryName(otherBackup) != Path.GetDirectoryName(firstBackup), "same filenames from different folders have separate backup directories");
+        var changed = Document(path); changed.Notices[0].Set("top", 10); File.AppendAllText(path, " ");
         Throws(() => changed.Save(), "external edits protected"); Check(File.ReadAllText(path).EndsWith(" "), "external content retained");
         var unicode = Write("utf16.xml", "<?xml version='1.0' encoding='utf-16'?><timeline><i-notice image='日本語.png' left='1'/></timeline>", Encoding.Unicode);
-        var ud = new TimelineDocument(unicode); ud.Notices[0].Set("left", 2); ud.Save(); Check(File.ReadAllBytes(unicode)[0] == 255 && File.ReadAllText(unicode).Contains("日本語.png"), "UTF-16 BOM preserved");
-        var cr = new TimelineDocument(Write("cr.xml", "<timeline>\r<i-notice left='1'/>\r</timeline>")); cr.Notices[0].Set("left", 2); Check(cr.Render().Contains("left='2'"), "CR-only line mapping");
-        var defaults = new TimelineDocument(Write("defaults.xml", "<timeline><default target-element='ImageNotice' target-attr='left' value='12'/><i-notice/></timeline>")); Check(defaults.Default(defaults.Notices[0], "left", -1) == 12, "inherited position default");
+        var ud = Document(unicode); ud.Notices[0].Set("left", 2); ud.Save(); Check(File.ReadAllBytes(unicode)[0] == 255 && File.ReadAllText(unicode).Contains("日本語.png"), "UTF-16 BOM preserved");
+        var cr = Document(Write("cr.xml", "<timeline>\r<i-notice left='1'/>\r</timeline>")); cr.Notices[0].Set("left", 2); Check(cr.Render().Contains("left='2'"), "CR-only line mapping");
+        var defaults = Document(Write("defaults.xml", "<timeline><default target-element='ImageNotice' target-attr='left' value='12'/><i-notice/></timeline>")); Check(defaults.Default(defaults.Notices[0], "left", -1) == 12, "inherited position default");
         Throws(() => TimelineDocument.Parse("<!DOCTYPE timeline [<!ENTITY x SYSTEM 'file:///c:/private'>]><timeline>&x;</timeline>"), "DTD/XXE rejected");
-        Check(new TimelineDocument(Write("visual-only.xml", "<timeline><v-notice text='' icon='missing.png'/></timeline>")).Notices.Count == 0, "visual-only XML has no editable notices");
+        Check(Document(Write("visual-only.xml", "<timeline><v-notice text='' icon='missing.png'/></timeline>")).Notices.Count == 0, "visual-only XML has no editable notices");
     }
     private static void Images()
     {
@@ -62,7 +75,7 @@ internal static partial class Program
         Check(resolver.Resolve("sample.png", false) == Path.Combine(root, "images", "sample.png"), "sibling images search");
         Check(resolver.Resolve("icon.png", true) == Path.Combine(root, "icon", "nested", "icon.png"), "nested icon search");
         var image = resolver.LoadAsync("sample.png", false, false, CancellationToken.None).GetAwaiter().GetResult(); Check(image.Item1.PixelWidth == 120 && image.Item1.IsFrozen, "decoded image is detached and frozen");
-        var doc = new TimelineDocument(Write("render.xml", "<timeline><i-notice image='sample.png'/></timeline>"));
+        var doc = Document(Write("render.xml", "<timeline><i-notice image='sample.png'/></timeline>"));
         var render = NoticePreview.Render(image.Item1, .5, "missing"); Check(render.PixelWidth == 66 && render.PixelHeight == 46, "Hojoring pixel dimensions, scale, 3-DIP border");
         Throws(() => resolver.LoadAsync("https://example.com/image.png", false, false, CancellationToken.None).GetAwaiter().GetResult(), "remote fetch needs explicit click");
         Throws(() => resolver.LoadAsync("http://example.com/image.png", false, true, CancellationToken.None).GetAwaiter().GetResult(), "HTTP remote rejected");
@@ -88,13 +101,13 @@ internal static partial class Program
     private static void Ui()
     {
         Application.EnableVisualStyles();
-        var file = Path.Combine(artifacts, "resources", "timeline", "demo.xml"); File.WriteAllText(file, "<timeline><s name='P1'><a time='20' text='Preview image'><i-notice image='sample.png' left='800' top='400'/><v-notice text='Notice' icon='icon.png'/></a></s></timeline>");
+        var file = Path.Combine(artifacts, "resources", "timeline", "demo.xml"); File.WriteAllText(file, "<timeline><s name='P1'><a time='20' text='Preview image'><i-notice image='sample.png' left='800' top='400'/><i-notice image='sample.png' left='1000' top='500'/><v-notice text='Notice' icon='icon.png'/></a></s></timeline>");
         var configFile = Path.Combine(Path.GetDirectoryName(file), "Timeline.config");
         File.WriteAllText(configFile, "<TimelineConfig><NoticeLeft>400</NoticeLeft><NoticeTop>200</NoticeTop><NoticeWidth>404</NoticeWidth></TimelineConfig>");
         foreach (var lang in new[] { "en", "ja", "zh-CN", "ko" })
         {
             using (var form = new Form { Width = 1080, Height = 1320 })
-            using (var control = new SettingsControl(new PluginSettings { Language = lang, TimelineFolder = Path.GetDirectoryName(file), CheckUpdatesOnStartup = false }))
+            using (var control = new SettingsControl(new PluginSettings { Language = lang, TimelineFolder = Path.GetDirectoryName(file), BackupDirectory = Path.Combine(artifacts, "Plugin", "Backups", "Timeline"), CheckUpdatesOnStartup = false }))
             {
                 form.Controls.Add(control); form.Show(); var editor = Descendants(control).OfType<EditorControl>().Single(); editor.Open(file);
                 var deadline = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
@@ -103,10 +116,27 @@ internal static partial class Program
                 var saveXml = Descendants(editor).OfType<Button>().Single(b => (string)b.Tag == "SaveXml"); Check(saveXml.Enabled, "editing enables XML save"); saveXml.PerformClick();
                 Check(File.ReadAllText(file).Contains("left='" + position.Value.ToString("0.###", CultureInfo.InvariantCulture) + "'"), "editor save applies selected XML position");
                 var list = Descendants(editor).OfType<ListBox>().Single();
-                Check(list.Items.Count == 1, "UI lists only i-notice");
+                Check(list.Items.Count == 2, "UI lists only i-notice");
                 Check(!Descendants(editor).OfType<Button>().Any(b => (string)b.Tag == "SaveGlobal"), "common config controls removed");
                 Check(File.ReadAllText(configFile) == "<TimelineConfig><NoticeLeft>400</NoticeLeft><NoticeTop>200</NoticeTop><NoticeWidth>404</NoticeWidth></TimelineConfig>", "Timeline.config remains untouched");
                 Check(File.ReadAllText(file).Contains("<v-notice text='Notice' icon='icon.png'/>"), "v-notice preserved on image save");
+                var checklist = (CheckedListBox)list;
+                checklist.SetItemChecked(0, true); checklist.SetItemChecked(1, true); Pump(600);
+                var states = (System.Collections.IDictionary)typeof(EditorControl).GetField("previews", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(editor);
+                var first = states[1]; var second = states[2];
+                var firstWindow = StateField<PreviewWindow>(first, "Window"); var secondWindow = StateField<PreviewWindow>(second, "Window");
+                Check(firstWindow != null && secondWindow != null && firstWindow.Opacity == 1 && secondWindow.Opacity == 1, "two independent previews shown");
+                var firstHandle = new WindowInteropHelper(firstWindow).Handle; var secondHandle = new WindowInteropHelper(secondWindow).Handle;
+                list.SelectedIndex = 1; Pump(50); var firstX = firstWindow.Left; position.Value += 25;
+                Check(firstWindow.Left == firstX && secondWindow.Left == (double)position.Value, "numeric edit changes selected preview only");
+                typeof(EditorControl).GetMethod("MovePreview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(editor, new object[] { first, 123d, 234d });
+                Check(firstWindow.Left == 123 && secondWindow.Left == (double)position.Value && list.SelectedIndex == 1, "dragging unselected preview edits its own notice");
+                checklist.SetItemChecked(0, false); Check(firstWindow.Opacity == 0 && secondWindow.Opacity == 1, "one preview can be hidden independently");
+                checklist.SetItemChecked(0, true); Check(new WindowInteropHelper(firstWindow).Handle == firstHandle && firstWindow.Opacity == 1, "preview toggle preserves handle");
+                saveXml.PerformClick();
+                var saved = Document(file); Check(saved.Notices[0].Get("left") == "123" && saved.Notices[1].Get("left") == position.Value.ToString("0.###", CultureInfo.InvariantCulture), "multiple edits saved together");
+                Check(new WindowInteropHelper(firstWindow).Handle == firstHandle && new WindowInteropHelper(secondWindow).Handle == secondHandle && firstWindow.Opacity == 1 && secondWindow.Opacity == 1, "save preserves active preview windows");
+                Check(Directory.GetFiles(Path.GetDirectoryName(file)).Length == 2, "UI save creates no sidecar files in timeline directory");
                 Descendants(editor).OfType<CheckBox>().Single(c => (string)c.Tag == "DetailView").Checked = true;                deadline = DateTime.UtcNow.AddSeconds(1); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
                 using (var b = new Bitmap(form.ClientSize.Width, form.ClientSize.Height)) { form.DrawToBitmap(b, form.ClientRectangle); b.Save(Path.Combine(artifacts, "ui-" + lang + ".png")); }
                 var tabs = Descendants(control).OfType<TabControl>().Single(); Check(tabs.TabPages.Count == 3 && tabs.TabPages[2].Text == Localization.Get(lang, "Support"), "support tab " + lang);
@@ -118,16 +148,18 @@ internal static partial class Program
         }
     }
     private static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) { foreach (Control child in parent.Controls) { yield return child; foreach (var nested in Descendants(child)) yield return nested; } }
+    private static T StateField<T>(object state, string name) => (T)state.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(state);
+    private static void Pump(int milliseconds) { var deadline = DateTime.UtcNow.AddMilliseconds(milliseconds); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); } }
     private static void Integration(string file)
     {
-        var original = File.ReadAllBytes(file); var doc = new TimelineDocument(file); var resolver = new ImageResolver(file, ""); int found = 0, missing = 0;
+        var original = File.ReadAllBytes(file); var doc = Document(file); var resolver = new ImageResolver(file, ""); int found = 0, missing = 0;
         foreach (var n in doc.Notices)
         {
             var reference = n.Get(n.IsImage ? "image" : "icon"); if (reference.Length == 0) continue;
             var path = resolver.Resolve(reference, !n.IsImage); if (path == null) { missing++; continue; }
             var result = resolver.LoadAsync(reference, !n.IsImage, false, CancellationToken.None).GetAwaiter().GetResult(); Check(result.Item1 != null, "actual referenced image decoded"); found++;
         }
-        var copy = Path.Combine(artifacts, "private-integration.xml"); File.WriteAllBytes(copy, original); var editable = new TimelineDocument(copy); var selected = editable.Notices.First(n => n.IsImage); selected.Set("left", 321); var backup = editable.Save();
+        var copy = Path.Combine(artifacts, "private-integration.xml"); File.WriteAllBytes(copy, original); var editable = Document(copy); var selected = editable.Notices.First(n => n.IsImage); selected.Set("left", 321); var backup = editable.Save();
         Check(File.ReadAllBytes(backup).SequenceEqual(original), "real XML exact backup"); Check(File.ReadAllBytes(file).SequenceEqual(original), "original XML untouched");
         Console.WriteLine("Timeline integration: " + doc.Notices.Count + " notices, " + found + " images resolved, " + missing + " missing.");
     }

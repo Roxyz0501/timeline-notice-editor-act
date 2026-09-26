@@ -1,11 +1,11 @@
-param([string]$Configuration = "Release", [string]$ActPath = "C:\Program Files (x86)\Advanced Combat Tracker\Advanced Combat Tracker.exe")
+param([string]$Configuration = "Release", [string]$ActPath = "C:\Program Files (x86)\Advanced Combat Tracker\Advanced Combat Tracker.exe", [switch]$UiTests)
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $ActPath)) { throw "Advanced Combat Tracker.exe was not found. Pass -ActPath." }
 dotnet build (Join-Path $PSScriptRoot "TimelineNoticeEditor.sln") -c $Configuration -p:ActPath="$ActPath" --configfile (Join-Path $PSScriptRoot "NuGet.Config")
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 $testExe = Join-Path $PSScriptRoot "tests\TimelineNoticeEditor.Tests\bin\$Configuration\net48\TimelineNoticeEditor.Tests.exe"
 Push-Location $PSScriptRoot
-try { & $testExe } finally { Pop-Location }
+try { if ($UiTests) { & $testExe --ui } else { & $testExe } } finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
 $dll = Join-Path $PSScriptRoot "src\TimelineNoticeEditor\bin\$Configuration\net48\TimelineNoticeEditor.dll"
 $updater = Join-Path $PSScriptRoot "src\TimelineNoticeEditor.Updater\bin\$Configuration\net48\TimelineNoticeEditor.Updater.exe"

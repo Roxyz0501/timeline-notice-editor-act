@@ -35,7 +35,7 @@ jobs:
         run: Expand-Archive act.zip act
       - name: Build and test
         shell: pwsh
-        run: .\build.ps1 -ActPath (Resolve-Path '.\act\Advanced Combat Tracker.exe')
+        run: .\build.ps1 -ActPath (Resolve-Path '.\act\Advanced Combat Tracker.exe') -UiTests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-assets

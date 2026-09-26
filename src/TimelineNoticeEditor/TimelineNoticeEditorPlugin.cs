@@ -26,6 +26,10 @@ namespace TimelineNoticeEditor
             status = statusLabel;
             settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Advanced Combat Tracker", "Config", "TimelineNoticeEditor.xml");
             settings = PluginSettings.Load(settingsPath); settings.InitializeLanguageIfMissing(CultureInfo.CurrentUICulture); settings.Normalize();
+            settings.BackupDirectoryResolver = () => {
+                try { return Path.Combine(Path.GetDirectoryName(ResolvePluginDllPath(ActGlobals.oFormActMain.ActPlugins, this)), "Backups", "Timeline"); }
+                catch { throw new IOException("BackupUnavailable"); }
+            };
             control = new SettingsControl(settings); page.Text = "Timeline Notice Editor"; page.Controls.Add(control);
             control.SettingsChanged += SettingsChanged;
 

@@ -11,6 +11,8 @@ namespace TimelineNoticeEditor
         public string ExtraImageFolder { get; set; } = "";
         public bool CheckUpdatesOnStartup { get; set; } = true;
         public string SkippedVersion { get; set; } = "";
+        internal string BackupDirectory { get; set; }
+        internal Func<string> BackupDirectoryResolver { get; set; }
         public void Normalize() { if (!string.IsNullOrWhiteSpace(Language)) Language = Localization.NormalizeLanguage(Language); }
         public bool InitializeLanguageIfMissing(CultureInfo culture) { if (!string.IsNullOrWhiteSpace(Language)) return false; Language = Localization.MapCulture(culture); return true; }
         public static PluginSettings Load(string path) { try { using (var stream = File.OpenRead(path)) { var s = (PluginSettings)new XmlSerializer(typeof(PluginSettings)).Deserialize(stream); s.Normalize(); return s; } } catch { return new PluginSettings(); } }

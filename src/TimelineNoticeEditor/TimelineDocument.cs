@@ -18,9 +18,9 @@ namespace TimelineNoticeEditor
         internal readonly XDocument Xml;
         internal readonly List<Notice> Notices = new List<Notice>();
         internal bool Dirty => Notices.Any(n => n.Changes.Count != 0);
-        internal TimelineDocument(string path)
+        internal TimelineDocument(string path, string backupDirectory = null)
         {
-            File = new SafeTextFile(path); Xml = Parse(File.Text);
+            File = new SafeTextFile(path, backupDirectory); Xml = Parse(File.Text);
             if (Xml.Root?.Name.LocalName != "timeline") throw new InvalidDataException("InvalidTimeline");
             var lines = new List<int> { 0 };
             for (int i = 0; i < File.Text.Length; i++)
@@ -60,7 +60,7 @@ namespace TimelineNoticeEditor
             }
             Parse(text); return text;
         }
-        internal string Save() => File.Save(Render());
+        internal string Save(string backupDirectory = null) => File.Save(Render(), backupDirectory: backupDirectory);
         private static string ReplaceAttribute(string tag, string name, string value)
         {
             int position = 1; while (position < tag.Length && !char.IsWhiteSpace(tag[position]) && tag[position] != '/' && tag[position] != '>') position++;
@@ -112,8 +112,10 @@ namespace TimelineNoticeEditor
         private readonly byte[] original;
         private readonly Encoding encoding;
         private readonly bool bom;
-        internal SafeTextFile(string path)
+        private readonly string backupDirectory;
+        internal SafeTextFile(string path, string backupDirectory)
         {
+            this.backupDirectory = backupDirectory;
             PathName = Path.GetFullPath(path);
             if (new FileInfo(PathName).Length > 32 * 1024 * 1024) throw new InvalidDataException("FileTooLarge");
             original = System.IO.File.ReadAllBytes(PathName);
@@ -124,32 +126,45 @@ namespace TimelineNoticeEditor
                 throw new InvalidDataException("EncodingUnsupported");
         }
         internal void VerifyUnchanged() { if (!System.IO.File.ReadAllBytes(PathName).SequenceEqual(original)) throw new IOException("ExternalChange"); }
-        internal string Backup()
+        private string WriteBackup(string directoryOverride)
         {
-            VerifyUnchanged(); var path = BackupName(); System.IO.File.WriteAllBytes(path, original); return path;
+            var root = directoryOverride ?? backupDirectory;
+            if (string.IsNullOrWhiteSpace(root)) throw new IOException("BackupUnavailable");
+            string id;
+            using (var sha = System.Security.Cryptography.SHA256.Create()) id = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(PathName.ToUpperInvariant()))).Replace("-", "").Substring(0, 20);
+            var directory = Path.Combine(Path.GetFullPath(root), Path.GetFileName(PathName) + "-" + id);
+            Directory.CreateDirectory(directory);
+            System.IO.File.WriteAllText(Path.Combine(directory, "source-path.txt"), PathName, new UTF8Encoding(false));
+            var path = Path.Combine(directory, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N") + ".bak");
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(original, 0, original.Length); stream.Flush(true); }
+            if (!System.IO.File.ReadAllBytes(path).SequenceEqual(original)) throw new IOException("BackupUnavailable");
+            return path;
         }
-        private string BackupName() => PathName + ".backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bak";
-        internal string Save(string text)
+        internal string Save(string text, Action<FileStream, byte[]> writer = null, string backupDirectory = null)
         {
             TimelineDocument.Parse(text); VerifyUnchanged();
             var bytes = encoding.GetBytes(text);
             if (bom) bytes = encoding.GetPreamble().Concat(bytes).ToArray();
-            var temp = PathName + "." + Guid.NewGuid().ToString("N") + ".tmp"; var backup = BackupName();
-            try
+            // No sidecar files are ever created in the timeline folder. A durable,
+            // verified backup is required before touching the exclusively locked file.
+            using (var target = new FileStream(PathName, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
             {
-                using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
-                // Hold a read lock against writers while checking and replacing. File.Replace
-                // creates the backup and replaces atomically; failure leaves the original intact.
-                using (var guard = new FileStream(PathName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                var current = new byte[target.Length]; int read = 0, n;
+                while (read < current.Length && (n = target.Read(current, read, current.Length - read)) > 0) read += n;
+                if (!current.SequenceEqual(original)) throw new IOException("ExternalChange");
+                var backup = WriteBackup(backupDirectory);
+                try
                 {
-                    var current = new byte[guard.Length]; int read = 0, n;
-                    while (read < current.Length && (n = guard.Read(current, read, current.Length - read)) > 0) read += n;
-                    if (!current.SequenceEqual(original)) throw new IOException("ExternalChange");
-                    System.IO.File.Replace(temp, PathName, backup);
+                    target.Position = 0;
+                    if (writer == null) target.Write(bytes, 0, bytes.Length); else writer(target, bytes);
+                    target.SetLength(bytes.Length); target.Flush(true);
+                    target.Position = 0; var verified = new byte[bytes.Length]; int total = 0;
+                    while (total < verified.Length && (n = target.Read(verified, total, verified.Length - total)) > 0) total += n;
+                    if (!verified.SequenceEqual(bytes)) throw new IOException("SaveFailed");
                 }
+                catch { target.Position = 0; target.Write(original, 0, original.Length); target.SetLength(original.Length); target.Flush(true); throw; }
                 return backup;
             }
-            finally { if (System.IO.File.Exists(temp)) System.IO.File.Delete(temp); }
         }
     }
 }
