@@ -173,7 +173,7 @@ namespace TimelineNoticeEditor
                 Render();
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { if (!IsDisposed && !token.IsCancellationRequested && selected == notice) { loadedImage = null; imagePath.Text = T(ex.Message) + "  " + reference; Render(); } }
+            catch (Exception ex) { if (!IsDisposed && !token.IsCancellationRequested && selected == notice) { loadedImage = null; var translated = T(ex.Message); imagePath.Text = (translated == ex.Message ? T("FileProblem") : translated) + "  " + reference; Render(); } }
         }
         private void Render()
         {

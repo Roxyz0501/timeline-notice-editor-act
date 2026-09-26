@@ -48,6 +48,7 @@ namespace TimelineNoticeEditor
                 var r = ImageRect(); g.DrawImage(bitmap, r);
                 using (var pen = new Pen(Color.FromArgb(218, 164, 60), 2)) g.DrawRectangle(pen, r.X, r.Y, r.Width, r.Height);
             }
+            using (var brush = new SolidBrush(BackColor)) g.FillRectangle(brush, 0, Height - 28, Width, 28);
             TextRenderer.DrawText(g, Hint, Font, new Rectangle(8, Height - 25, Math.Max(1, Width - 16), 24), Color.FromArgb(48, 61, 80), TextFormatFlags.EndEllipsis);
         }
         private RectangleF ImageRect() => new RectangleF(originX + (float)X * zoom, originY + (float)Y * zoom, (bitmap?.Width ?? 0) * zoom, (bitmap?.Height ?? 0) * zoom);
