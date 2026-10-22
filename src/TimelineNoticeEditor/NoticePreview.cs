@@ -52,6 +52,15 @@ namespace TimelineNoticeEditor
         }
         internal async Task<Tuple<BitmapSource, string>> LoadAsync(string reference, bool icon, bool allowRemote, CancellationToken token)
         {
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(12));
+                return await LoadCoreAsync(reference, icon, allowRemote, deadline.Token).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<Tuple<BitmapSource, string>> LoadCoreAsync(string reference, bool icon, bool allowRemote, CancellationToken token)
+        {
             Uri uri;
             if (Uri.TryCreate(reference, UriKind.Absolute, out uri) && (uri.Scheme == "https" || uri.Scheme == "http"))
             {

@@ -22,7 +22,7 @@ internal static partial class Program
         {
             artifacts = Path.GetFullPath(Path.Combine("artifacts", "tests-" + Guid.NewGuid().ToString("N")));
             Directory.CreateDirectory(artifacts);
-            XmlSafety(); Images(); Languages(); UpdateSafety(); OverlayStability();
+            XmlSafety(); Images(); Languages(); UpdateSafety(); OverlayStability(); SettingsPersistence(); Lifecycle();
             if (args.Contains("--ui")) Ui();
             var at = Array.IndexOf(args, "--timeline"); if (at >= 0) Integration(args[at + 1]);
             if (args.Contains("--release")) ReleaseIntegration();

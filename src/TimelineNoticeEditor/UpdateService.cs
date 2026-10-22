@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -15,9 +14,11 @@ namespace TimelineNoticeEditor
         private const long MaximumDownloadBytes = 100L * 1024 * 1024;
         private readonly HttpClient client;
 
-        public UpdateService()
+        public UpdateService() : this(new HttpClientHandler { AllowAutoRedirect = false }) { }
+
+        internal UpdateService(HttpMessageHandler handler)
         {
-            client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(15) };
+            client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("TimelineNoticeEditor/" + Assembly.GetExecutingAssembly().GetName().Version.ToString(3));
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         }
@@ -31,9 +32,11 @@ namespace TimelineNoticeEditor
                 EnsureAllowedUri(new Uri(UpdateConfiguration.ReleasesApiUrl), true);
                 return await CheckFromFetcherAsync(async () =>
                 {
-                    var json = await client.GetStringAsync(UpdateConfiguration.ReleasesApiUrl).ConfigureAwait(false);
-                    cancellationToken.ThrowIfCancellationRequested();
-                    return json;
+                    using (var response = await client.GetAsync(UpdateConfiguration.ReleasesApiUrl, cancellationToken).ConfigureAwait(false))
+                    {
+                        response.EnsureSuccessStatusCode();
+                        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    }
                 }, currentVersion).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -78,6 +81,16 @@ namespace TimelineNoticeEditor
 
         public async Task<PreparedUpdate> DownloadAndVerifyAsync(ReleaseInfo release, CancellationToken cancellationToken)
         {
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                deadline.CancelAfter(TimeSpan.FromMinutes(2));
+                return await DownloadAndVerifyCoreAsync(release, deadline.Token).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<PreparedUpdate> DownloadAndVerifyCoreAsync(ReleaseInfo release, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             if (release == null) throw new ArgumentNullException("release");
             var expectedZip = "TimelineNoticeEditor-v" + release.Version + ".zip";
             var alternateZip = "TimelineNoticeEditor-" + release.Version + ".zip";
@@ -93,6 +106,8 @@ namespace TimelineNoticeEditor
 
             var root = Path.Combine(Path.GetTempPath(), "TimelineNoticeEditorUpdater", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
+            try
+            {
             var zipPath = Path.Combine(root, "package.zip");
             var manifestPath = Path.Combine(root, "package.sha256");
             await DownloadAsync(zip.DownloadUrl, zipPath, cancellationToken).ConfigureAwait(false);
@@ -101,31 +116,21 @@ namespace TimelineNoticeEditor
             if (!UpdatePackageVerifier.VerifySha256(zipPath, expected)) throw new InvalidDataException("HashFailed");
 
             var extracted = Path.Combine(root, "extracted");
+            cancellationToken.ThrowIfCancellationRequested();
             UpdatePackageVerifier.ExtractValidated(zipPath, extracted);
             var dll = Directory.GetFiles(extracted, UpdateConfiguration.PluginFileName, SearchOption.AllDirectories).SingleOrDefault();
             var updater = Directory.GetFiles(extracted, UpdateConfiguration.UpdaterFileName, SearchOption.AllDirectories).SingleOrDefault();
             if (dll == null || updater == null) throw new InvalidDataException("InvalidPackage");
             UpdatePackageVerifier.ValidatePluginAssembly(dll, release.Version);
             UpdatePackageVerifier.ValidateUpdaterAssembly(updater, release.Version);
+            cancellationToken.ThrowIfCancellationRequested();
             return new PreparedUpdate { StagedDllPath = dll, StagedUpdaterPath = updater, DllSha256 = UpdatePackageVerifier.ComputeSha256(dll), Release = release };
-        }
-
-        public void LaunchUpdater(PreparedUpdate update, string targetDllPath)
-        {
-            if (update == null) throw new ArgumentNullException("update");
-            var stagedUpdater = Path.GetFullPath(update.StagedUpdaterPath);
-            if (!File.Exists(stagedUpdater)) throw new InvalidOperationException("UpdaterMissing");
-            var info = new ProcessStartInfo
+            }
+            catch
             {
-                FileName = stagedUpdater,
-                WorkingDirectory = Path.GetDirectoryName(stagedUpdater),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                Arguments = "--wait-pid " + Process.GetCurrentProcess().Id +
-                    " --source " + Quote(update.StagedDllPath) + " --target " + Quote(targetDllPath) +
-                    " --sha256 " + update.DllSha256 + " --version " + update.Release.Version
-            };
-            Process.Start(info);
+                try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                throw;
+            }
         }
 
         private async Task DownloadAsync(string url, string destination, CancellationToken cancellationToken)
@@ -175,7 +180,6 @@ namespace TimelineNoticeEditor
             if (!allowed) throw new InvalidDataException("Unexpected update host.");
         }
 
-        private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
         public void Dispose() { client.Dispose(); }
     }
 }
