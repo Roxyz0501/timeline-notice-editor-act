@@ -50,16 +50,16 @@ namespace TimelineNoticeEditor
                 foreach (var file in Find(child, filename)) yield return file;
             }
         }
-        internal async Task<Tuple<BitmapSource, string>> LoadAsync(string reference, bool icon, bool allowRemote, CancellationToken token)
+        internal async Task<Tuple<BitmapSource, string>> LoadAsync(string reference, bool icon, bool allowRemote, CancellationToken token, long maxDecodedBytes = 256L * 1024 * 1024)
         {
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
             {
                 deadline.CancelAfter(TimeSpan.FromSeconds(12));
-                return await LoadCoreAsync(reference, icon, allowRemote, deadline.Token).ConfigureAwait(false);
+                return await LoadCoreAsync(reference, icon, allowRemote, deadline.Token, maxDecodedBytes).ConfigureAwait(false);
             }
         }
 
-        private async Task<Tuple<BitmapSource, string>> LoadCoreAsync(string reference, bool icon, bool allowRemote, CancellationToken token)
+        private async Task<Tuple<BitmapSource, string>> LoadCoreAsync(string reference, bool icon, bool allowRemote, CancellationToken token, long maxDecodedBytes)
         {
             Uri uri;
             if (Uri.TryCreate(reference, UriKind.Absolute, out uri) && (uri.Scheme == "https" || uri.Scheme == "http"))
@@ -77,7 +77,7 @@ namespace TimelineNoticeEditor
                     {
                         var buffer = new byte[81920]; int n;
                         while ((n = await stream.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) > 0) { output.Write(buffer, 0, n); if (output.Length > 20 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge"); }
-                        return Tuple.Create(Decode(output.ToArray()), reference);
+                        return Tuple.Create(Decode(output.GetBuffer(), maxDecodedBytes, (int)output.Length), reference);
                     }
                 }
             }
@@ -86,24 +86,43 @@ namespace TimelineNoticeEditor
                 token.ThrowIfCancellationRequested(); var path = Resolve(reference, icon);
                 if (path == null) return Tuple.Create<BitmapSource, string>(null, reference);
                 if (new FileInfo(path).Length > 20 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge");
-                return Tuple.Create(Decode(System.IO.File.ReadAllBytes(path)), path);
+                return Tuple.Create(Decode(System.IO.File.ReadAllBytes(path), maxDecodedBytes), path);
             }, token).ConfigureAwait(false);
         }
-        private static BitmapSource Decode(byte[] data)
+        private static BitmapSource Decode(byte[] data, long maxDecodedBytes, int length = -1)
         {
-            using (var stream = new MemoryStream(data))
+            if (length < 0) length = data.Length;
+            // Inspect metadata before requesting a fully cached raster.
+            using (var header = new MemoryStream(data, 0, length, false))
+            {
+                var info = BitmapDecoder.Create(header, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.None).Frames[0];
+                if ((long)info.PixelWidth * info.PixelHeight > 32 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge");
+                if (PreviewBudget.Bytes(info) * 2 > maxDecodedBytes) throw new InvalidDataException("PreviewBudgetFull");
+            }
+            using (var stream = new MemoryStream(data, 0, length, false))
             {
                 var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
                 if ((long)frame.PixelWidth * frame.PixelHeight > 32 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge");
-                frame.Freeze(); return frame;
+                if (PreviewBudget.Bytes(frame) * 2 > maxDecodedBytes) throw new InvalidDataException("PreviewBudgetFull");
+                // Detach from the decoder and its encoded stream; account for both
+                // the decoded frame and this copy until the load is consumed.
+                var result = new WriteableBitmap(frame); result.Freeze(); return result;
             }
         }
     }
 
     internal static class NoticePreview
     {
+        internal static long RenderBytes(BitmapSource image, double scale)
+        {
+            var width = Math.Ceiling((image?.PixelWidth ?? 280) * scale + 6);
+            var height = Math.Ceiling((image?.PixelHeight ?? 80) * scale + 6);
+            if (double.IsNaN(scale) || scale <= 0 || width > 8000 || height > 8000 || width * height > 32 * 1024 * 1024) throw new InvalidDataException("ImageTooLarge");
+            return checked((long)width * (long)height * 4);
+        }
         internal static BitmapSource Render(BitmapSource image, double scale, string missing)
         {
+            RenderBytes(image, scale);
             var visual = new DrawingVisual();
             double width = image?.PixelWidth ?? 280, height = image?.PixelHeight ?? 80;
             {

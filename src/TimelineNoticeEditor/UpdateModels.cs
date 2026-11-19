@@ -11,6 +11,7 @@ namespace TimelineNoticeEditor
 
     internal sealed class ReleaseInfo
     {
+        public bool OfficialFallback { get; set; }
         public string Tag { get; set; }
         public SemVersion Version { get; set; }
         public string Name { get; set; }
@@ -32,6 +33,7 @@ namespace TimelineNoticeEditor
         public string StagedDllPath { get; set; }
         public string StagedUpdaterPath { get; set; }
         public string DllSha256 { get; set; }
+        public string UpdaterSha256 { get; set; }
         public ReleaseInfo Release { get; set; }
     }
 }

@@ -21,7 +21,7 @@ namespace TimelineNoticeEditor
         private string settingsPath;
         private SettingsSaveCoordinator settingsSaver;
         private volatile bool stopped = true;
-        private bool checking, preparing;
+        private bool checking, preparing, updateScheduled;
         private int generation;
         private readonly object taskGate = new object();
         private readonly System.Collections.Generic.List<Task> operations = new System.Collections.Generic.List<Task>();
@@ -36,7 +36,7 @@ namespace TimelineNoticeEditor
         internal void InitPlugin(TabPage page, Label statusLabel, string path, UpdateService service)
         {
             if (!stopped) throw new InvalidOperationException("Plugin is already initialized.");
-            generation++; stopped = false; checking = preparing = false; lastUpdate = null;
+            generation++; stopped = false; checking = preparing = updateScheduled = false; lastUpdate = null;
             updates = service; cancellation = new CancellationTokenSource();
             operations.Clear();
             status = statusLabel;
@@ -58,10 +58,19 @@ namespace TimelineNoticeEditor
             control.CheckUpdatesRequested += checkHandler;
             control.InstallUpdateRequested += installHandler;
             control.LaterRequested += laterHandler;
-            status.Text = T("Started");
+            SetStatus("Started");
             if (settings.CheckUpdatesOnStartup) StartOperation(() => CheckUpdatesAsync(false));
         }
-        private string T(string key, params object[] args) => Localization.Get(settings?.Language ?? "en", key, args);
+        public void SetHostedLanguage(string code)
+        {
+            if (stopped || control == null) return;
+            control.SetHostedLanguage(code);
+            if (status != null) status.Text = T(statusKey, statusArgs);
+        }
+        private string statusKey = "Started";
+        private object[] statusArgs = new object[0];
+        private void SetStatus(string key, params object[] args) { statusKey = key; statusArgs = args; status.Text = T(key, args); }
+        private string T(string key, params object[] args) => Localization.Get(settings?.EffectiveLanguage ?? "en", key, args);
         private void StartOperation(Func<Task> operation)
         {
             if (stopped) return;
@@ -70,7 +79,7 @@ namespace TimelineNoticeEditor
         }
         private async Task CheckUpdatesAsync(bool manual)
         {
-            if (checking || preparing || stopped) return; checking = true; control.SetUpdateChecking();
+            if (checking || preparing || updateScheduled || stopped) return; checking = true; control.SetUpdateChecking();
             var run = generation;
             try
             {
@@ -80,7 +89,7 @@ namespace TimelineNoticeEditor
                     if (result.Status == UpdateCheckStatus.UpdateAvailable)
                     {
                         if (!manual && settings.SkippedVersion == result.Release.Version.ToString()) control.ShowUpdateSkipped(settings.SkippedVersion);
-                        else { control.FocusUpdateTab(); status.Text = T("UpdateAvailable", current.ToString(3), result.Release.Version); }
+                        else { control.FocusUpdateTab(); SetStatus("UpdateAvailable", current.ToString(3), result.Release.Version); }
                     }
                 });
             }
@@ -90,16 +99,25 @@ namespace TimelineNoticeEditor
         }
         private async Task InstallAsync()
         {
-            if (preparing || stopped || lastUpdate?.Status != UpdateCheckStatus.UpdateAvailable) return;
+            if (preparing || updateScheduled || stopped || lastUpdate?.Status != UpdateCheckStatus.UpdateAvailable) return;
             preparing = true;
             var run = generation;
             control.SetUpdateText("Preparing");
             try
             {
                 var package = await updates.DownloadAndVerifyAsync(lastUpdate.Release, cancellation.Token).ConfigureAwait(false); if (stopped) return;
-                PostUi(run, () => { control.SetUpdateText("Prepared", package.StagedDllPath); status.Text = T("Prepared", package.StagedDllPath); });
+                PostUi(run, () => {
+                    try {
+                        var target = ResolvePluginDllPath(ActGlobals.oFormActMain.ActPlugins, this);
+                        using (var act = System.Diagnostics.Process.GetCurrentProcess())
+                        using (var helper = System.Diagnostics.Process.Start(UpdateLauncher.CreateStartInfo(package, target, act.Id)))
+                            if (helper == null) throw new IOException("Updater failed to start.");
+                        updateScheduled = true;
+                        control.SetUpdateText("Prepared"); SetStatus("Prepared");
+                    } catch { control.SetUpdateText("UpdateFailed", T("UpdateProblem")); SetStatus("UpdateProblem"); }
+                });
             }
-            catch { PostUi(run, () => { control.SetUpdateText("UpdateFailed", T("UpdateProblem")); status.Text = T("UpdateProblem"); }); }
+            catch (Exception ex) { var key = ex is UpdateLimitException ? "CheckLimited" : "UpdateProblem"; PostUi(run, () => { control.SetUpdateText("UpdateFailed", T(key)); SetStatus(key); }); }
             finally { preparing = false; }
         }
         private void PostUi(int run, Action action)
@@ -133,7 +151,7 @@ namespace TimelineNoticeEditor
             try { Task.WaitAll(pending); } catch (AggregateException) { }
             control?.Dispose();
             settingsSaver?.StopAndFlush();
-            if (settingsSaver?.LastError != null) status.Text = T("SaveFailed"); else status.Text = T("Stopped");
+            if (settingsSaver?.LastError != null) SetStatus("SaveFailed"); else SetStatus("Stopped");
             updates.Dispose(); cancellation.Dispose();
         }
     }

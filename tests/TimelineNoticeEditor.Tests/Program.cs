@@ -18,12 +18,13 @@ internal static partial class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--wait-child")) { Thread.Sleep(2500); return 0; }
         try
         {
             artifacts = Path.GetFullPath(Path.Combine("artifacts", "tests-" + Guid.NewGuid().ToString("N")));
             Directory.CreateDirectory(artifacts);
-            XmlSafety(); Images(); Languages(); UpdateSafety(); OverlayStability(); SettingsPersistence(); Lifecycle();
-            if (args.Contains("--ui")) Ui();
+            XmlSafety(); Images(); Languages(); UpdateSafety(); OverlayStability(); SettingsPersistence(); Lifecycle(); PreviewResources(); UpdateLaunch(); UpdateNetwork(); HostedLanguage();
+            if (args.Contains("--ui")) { Ui(); PreviewActiveBudget(); }
             var at = Array.IndexOf(args, "--timeline"); if (at >= 0) Integration(args[at + 1]);
             if (args.Contains("--release")) ReleaseIntegration();
             Console.WriteLine("PASS: " + checks + " checks. Artifacts: " + artifacts); return 0;
@@ -139,7 +140,7 @@ internal static partial class Program
                 Check(Directory.GetFiles(Path.GetDirectoryName(file)).Length == 2, "UI save creates no sidecar files in timeline directory");
                 Descendants(editor).OfType<CheckBox>().Single(c => (string)c.Tag == "DetailView").Checked = true;                deadline = DateTime.UtcNow.AddSeconds(1); while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
                 using (var b = new Bitmap(form.ClientSize.Width, form.ClientSize.Height)) { form.DrawToBitmap(b, form.ClientRectangle); b.Save(Path.Combine(artifacts, "ui-" + lang + ".png")); }
-                var tabs = Descendants(control).OfType<TabControl>().Single(); Check(tabs.TabPages.Count == 3 && tabs.TabPages[2].Text == Localization.Get(lang, "Support"), "support tab " + lang);
+                var tabs = Descendants(control).OfType<TabControl>().Single(); Check(tabs.TabPages.Count == 4 && tabs.TabPages[3].Text == Localization.Get(lang, "Support"), "support tab " + lang);
                 foreach (TabPage tab in tabs.TabPages) { tabs.SelectedTab = tab; Application.DoEvents(); Check(tab.Controls.Count > 0, "tab built"); }
                 tabs.SelectedIndex = 0; form.Width = 650; form.Height = 730; form.PerformLayout(); Application.DoEvents();
                 using (var b = new Bitmap(form.ClientSize.Width, form.ClientSize.Height)) { form.DrawToBitmap(b, form.ClientRectangle); b.Save(Path.Combine(artifacts, "ui-narrow-" + lang + ".png")); }

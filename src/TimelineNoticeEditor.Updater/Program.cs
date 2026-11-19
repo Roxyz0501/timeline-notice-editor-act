@@ -27,6 +27,8 @@ namespace TimelineNoticeEditor.Updater
                 var assembly = System.Reflection.AssemblyName.GetAssemblyName(source);
                 if (assembly.Name != "TimelineNoticeEditor" || assembly.Version.ToString(3) != version || FileVersionInfo.GetVersionInfo(source).CompanyName != "Roxyz0501") throw new InvalidDataException("InvalidPackage");
                 WaitForExit(processId);
+                if (!string.Equals(Hash(target), Required(values, "--original"), StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Installed DLL changed since update was requested.");
                 ReplaceWithBackup(source, target, expectedHash, version);
                 return 0;
             }

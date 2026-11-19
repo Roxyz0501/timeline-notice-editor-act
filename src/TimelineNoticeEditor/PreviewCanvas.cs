@@ -1,7 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.IO;
+using System.Drawing.Imaging;
 using System.Windows.Forms;
 using System.Windows.Media.Imaging;
 namespace TimelineNoticeEditor
@@ -9,6 +9,9 @@ namespace TimelineNoticeEditor
     internal sealed class PreviewCanvas : Control
     {
         private Bitmap bitmap;
+        private BitmapSource source;
+        internal int CopyCount { get; private set; }
+        internal long BufferBytes => bitmap == null ? 0 : (long)bitmap.Width * bitmap.Height * 4;
         private float zoom = 1, originX, originY;
         private Point last;
         private bool dragging;
@@ -19,8 +22,21 @@ namespace TimelineNoticeEditor
         internal PreviewCanvas() { DoubleBuffered = true; BackColor = Color.FromArgb(231, 237, 244); Dock = DockStyle.Fill; TabStop = true; ResizeRedraw = true; }
         internal void SetImage(BitmapSource image)
         {
+            if (ReferenceEquals(source, image)) return;
+            source = null;
             bitmap?.Dispose(); bitmap = null;
-            if (image != null) using (var stream = new MemoryStream()) { var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image)); encoder.Save(stream); stream.Position = 0; using (var decoded = new Bitmap(stream)) bitmap = new Bitmap(decoded); }
+            if (image != null)
+            {
+                var next = new Bitmap(image.PixelWidth, image.PixelHeight, PixelFormat.Format32bppPArgb);
+                try
+                {
+                    var data = next.LockBits(new Rectangle(0, 0, next.Width, next.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+                    try { image.CopyPixels(System.Windows.Int32Rect.Empty, data.Scan0, checked(data.Stride * data.Height), data.Stride); }
+                    finally { next.UnlockBits(data); }
+                    bitmap = next; source = image; CopyCount++;
+                }
+                catch { next.Dispose(); throw; }
+            }
             Invalidate();
         }
         protected override void OnPaint(PaintEventArgs e)
@@ -63,6 +79,6 @@ namespace TimelineNoticeEditor
             if (e.KeyCode == Keys.Left) X -= step; else if (e.KeyCode == Keys.Right) X += step; else if (e.KeyCode == Keys.Up) Y -= step; else if (e.KeyCode == Keys.Down) Y += step; else return;
             e.Handled = true; Moved?.Invoke(X, Y); Invalidate();
         }
-        protected override void Dispose(bool disposing) { if (disposing) bitmap?.Dispose(); base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing) { bitmap?.Dispose(); bitmap = null; source = null; } base.Dispose(disposing); }
     }
 }

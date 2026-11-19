@@ -29,12 +29,33 @@ namespace TimelineNoticeEditor
             internal string Path = "";
             internal bool Enabled, Loaded;
             internal int LoadGeneration;
-            internal CancellationTokenSource Cancellation;
+            internal bool Requested, AllowRemote, RenderDirty;
+            internal long LastUse;
+            internal int ImageRevision, RenderRevision = -1;
+            internal double RenderScale;
+            internal string RenderText;
+            internal PreviewBudget.Lease SourceLease, RenderLease;
             internal PreviewWindow Window;
         }
         private readonly Dictionary<int, PreviewState> previews = new Dictionary<int, PreviewState>();
-        private readonly object imageTaskGate = new object();
-        private readonly System.Collections.Generic.HashSet<Task> imageTasks = new System.Collections.Generic.HashSet<Task>();
+        private readonly PreviewBudget budget;
+        private readonly System.Windows.Forms.Timer workTimer = new System.Windows.Forms.Timer { Interval = 80 };
+        private Task<Tuple<BitmapSource, string>> activeLoad;
+        private PreviewState activeState;
+        private CancellationTokenSource activeCancellation;
+        private PreviewBudget.Lease activeLease, canvasLease;
+        private int activeGeneration;
+        private bool activeAllowRemote;
+        private string activeReference;
+        private long useClock;
+        internal int RenderCount { get; private set; }
+        internal int LoadCount { get; private set; }
+        internal int SkippedRenders { get; private set; }
+        internal long PreviewBytes => budget.Used;
+        internal long PeakPreviewBytes => budget.Peak;
+        internal long ResidentPreviewBytes => budget.Used - (activeLease?.Bytes ?? 0);
+        internal int CanvasCopies => canvas.CopyCount;
+        internal bool WorkPending => activeLoad != null || previews.Values.Any(s => Needed(s) && (s.Requested || s.RenderDirty));
         private volatile bool closing;
         private TimelineDocument document;
 
@@ -44,8 +65,10 @@ namespace TimelineNoticeEditor
         private string messageKey = "EditorHint";
         private object[] messageArgs = new object[0];
         internal event EventHandler SettingsChanged;
-        internal EditorControl(PluginSettings settings)
+        internal EditorControl(PluginSettings settings, long previewBudget = PreviewBudget.DefaultLimit)
         {
+            budget = new PreviewBudget(previewBudget);
+            workTimer.Tick += ProcessPreviewWork;
             this.settings = settings; Dock = DockStyle.Fill; BackColor = Color.White;
             var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
             var layout = new TableLayoutPanel { Dock = DockStyle.Top, Height = 960, MinimumSize = new Size(680, 960), ColumnCount = 1, Padding = new Padding(12) };
@@ -80,11 +103,11 @@ namespace TimelineNoticeEditor
             if (!Directory.Exists(settings.TimelineFolder)) settings.TimelineFolder = PluginSettings.DiscoverFolder();
             PopulateFiles(); ApplyLanguage(); UpdateButtons();
         }
-        private string T(string key, params object[] args) => Localization.Get(settings.Language, key, args);
+        private string T(string key, params object[] args) => Localization.Get(settings.EffectiveLanguage, key, args);
         private void Status(string key, params object[] args) { messageKey = key; messageArgs = args; message.Text = T(key, args); }
         internal void ApplyLanguage()
         {
-            Translate(this); canvas.Hint = T("DragHint"); message.Text = T(messageKey, messageArgs); UpdateLabels(); Render();
+            Translate(this); canvas.Hint = T("DragHint"); message.Text = T(messageKey, messageArgs); UpdateLabels(); foreach (var state in previews.Values.ToArray()) if (Needed(state)) RenderState(state);
         }
         private void Translate(Control root) { if (root.Tag is string) root.Text = T((string)root.Tag); foreach (Control child in root.Controls) Translate(child); }
         private void ChooseFolder(bool image)
@@ -121,8 +144,10 @@ namespace TimelineNoticeEditor
         }
         private void Clear()
         {
-            lock (imageTaskGate) foreach (var state in previews.Values) { state.Cancellation?.Cancel(); state.Window?.Close(); }
-            previews.Clear(); selected = null; document = null; rendered = null; canvas.SetImage(null); notices.Items.Clear(); UpdateButtons();
+            activeCancellation?.Cancel();
+            SetCanvas(null);
+            foreach (var state in previews.Values) { ReleaseState(state); state.Window?.Close(); }
+            previews.Clear(); selected = null; document = null; notices.Items.Clear(); UpdateButtons();
         }
         private void PopulateNotices()
         {
@@ -135,9 +160,10 @@ namespace TimelineNoticeEditor
         private void SelectNotice()
         {
             if (populating) return; selected = notices.SelectedItem as Notice;
-            rendered = null; canvas.SetImage(null); FillValues(); UpdateLabels(); UpdateButtons();
+            SetCanvas(null); FillValues(); UpdateLabels(); UpdateButtons();
             populating = true; preview.Checked = selected != null && State(selected).Enabled; populating = false;
-            if (selected != null) LoadImage(selected, false);
+            TrimHidden(false);
+            if (selected != null) { State(selected).LastUse = ++useClock; LoadImage(selected, false); }
         }
         private void FillValues()
         {
@@ -169,7 +195,7 @@ namespace TimelineNoticeEditor
 
             UpdatePosition(); UpdateButtons(); notices.Invalidate();
         }
-        private void ChangeScale(object sender, EventArgs e) { if (populating || selected?.IsImage != true) return; selected.Set("scale", (double)scale.Value); Render(); UpdateButtons(); notices.Invalidate(); }
+        private void ChangeScale(object sender, EventArgs e) { if (populating || selected?.IsImage != true) return; selected.Set("scale", (double)scale.Value); State(selected).RenderDirty = true; workTimer.Start(); UpdateButtons(); notices.Invalidate(); }
         private void MoveNotice(double x, double y)
         {
             if (selected == null) return;
@@ -184,69 +210,172 @@ namespace TimelineNoticeEditor
         private void SetPreview(Notice notice, bool enabled, bool updateList)
         {
             var state = State(notice); state.Enabled = enabled;
+            state.LastUse = ++useClock;
             populating = true;
             if (selected == notice) preview.Checked = enabled;
             int index = notices.Items.IndexOf(notice);
             if (updateList && index >= 0) notices.SetItemChecked(index, enabled);
             populating = false;
-            if (enabled && !state.Loaded) LoadImage(notice, false); else UpdatePreview(state);
+            if (enabled) { if (!state.Loaded) LoadImage(notice, false); else RenderState(state); }
+            else UpdatePreview(state);
+            TrimHidden(false);
+        }
+        private bool Needed(PreviewState state) => state.Enabled || state.Notice == selected;
+        private bool IsCurrent(PreviewState state) { PreviewState current; return previews.TryGetValue(state.Notice.Id, out current) && ReferenceEquals(current, state); }
+        private PreviewBudget.Lease Reserve(long bytes)
+        {
+            if (bytes > budget.Available) TrimHidden(true);
+            return budget.Reserve(bytes);
+        }
+        private void ReleaseState(PreviewState state)
+        {
+            state.LoadGeneration++; state.Requested = state.RenderDirty = false;
+            if (ReferenceEquals(activeState, state)) activeCancellation?.Cancel();
+            state.Window?.Present(null, 0, 0, false, locked.Checked);
+            state.Image = state.Rendered = null; state.Loaded = false; state.RenderRevision = -1;
+            state.SourceLease?.Dispose(); state.RenderLease?.Dispose();
+            state.SourceLease = state.RenderLease = null;
+        }
+        private void TrimHidden(bool all)
+        {
+            var hidden = previews.Values.Where(s => !Needed(s)).OrderBy(s => s.LastUse).ToList();
+            foreach (var state in hidden)
+            {
+                state.Requested = state.AllowRemote = state.RenderDirty = false;
+                if (ReferenceEquals(activeState, state)) activeCancellation?.Cancel();
+            }
+            long bytes = hidden.Sum(s => (s.SourceLease?.Bytes ?? 0) + (s.RenderLease?.Bytes ?? 0));
+            int count = hidden.Count;
+            foreach (var state in hidden)
+            {
+                if (!all && count <= 4 && bytes <= 8L * 1024 * 1024) break;
+                bytes -= (state.SourceLease?.Bytes ?? 0) + (state.RenderLease?.Bytes ?? 0); count--;
+                ReleaseState(state); state.Window?.Close(); state.Window = null;
+                previews.Remove(state.Notice.Id);
+            }
+        }
+        private void SetCanvas(BitmapSource image)
+        {
+            if (ReferenceEquals(rendered, image)) return;
+            canvas.SetImage(null); rendered = null; canvasLease?.Dispose(); canvasLease = null;
+            if (image == null) return;
+            var lease = Reserve(PreviewBudget.Bytes(image));
+            if (lease == null) { Status("PreviewBudgetFull"); return; }
+            try { canvas.SetImage(image); rendered = image; canvasLease = lease; }
+            catch { lease.Dispose(); throw; }
         }
         private void LoadImage(Notice notice, bool allowRemote)
         {
             if (closing || document == null) return;
             var state = State(notice);
             if (state.Loaded && !allowRemote) { RenderState(state); return; }
-            CancellationTokenSource cancellation;
-            lock (imageTaskGate) { state.Cancellation?.Cancel(); cancellation = new CancellationTokenSource(); state.Cancellation = cancellation; }
-            var reference = notice.Get("image");
+            if (ReferenceEquals(activeState, state) && !allowRemote && !activeCancellation.IsCancellationRequested) return;
+            if (ReferenceEquals(activeState, state)) activeCancellation?.Cancel();
+            state.LoadGeneration++; state.Requested = true; state.AllowRemote |= allowRemote;
             if (selected == notice) imagePath.Text = T("LoadingImage");
-            var task = LoadImageAsync(state, reference, allowRemote, cancellation, ++state.LoadGeneration);
-            lock (imageTaskGate) { imageTasks.RemoveWhere(t => t.IsCompleted); imageTasks.Add(task); }
+            StartNextLoad(); workTimer.Start();
         }
-        private async Task LoadImageAsync(PreviewState state, string reference, bool allowRemote, CancellationTokenSource cancellation, int loadGeneration)
+        private void StartNextLoad()
         {
-            var token = cancellation.Token;
-            try
-            {
-                var result = await new ImageResolver(document.File.PathName, settings.ExtraImageFolder).LoadAsync(reference, false, allowRemote, token).ConfigureAwait(false);
-                OnUi(() => {
-                    if (closing || token.IsCancellationRequested || !IsCurrent(state) || state.LoadGeneration != loadGeneration) return;
-                    state.Image = result.Item1; state.Path = string.IsNullOrEmpty(reference) ? T("NoImage") : result.Item1 == null ? T("MissingImage", reference) : result.Item2;
-                    state.Loaded = true; RenderState(state);
-                });
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                OnUi(() => {
-                    if (closing || token.IsCancellationRequested || !IsCurrent(state) || state.LoadGeneration != loadGeneration) return;
-                    state.Image = null; var translated = T(ex.Message); state.Path = (translated == ex.Message ? T("FileProblem") : translated) + "  " + reference;
-                    state.Loaded = true; RenderState(state);
-                });
-            }
-            finally { lock (imageTaskGate) { if (ReferenceEquals(state.Cancellation, cancellation)) state.Cancellation = null; cancellation.Dispose(); } }
+            if (closing || activeLoad != null || document == null) return;
+            var state = previews.Values.Where(s => s.Requested && Needed(s)).OrderByDescending(s => s.Notice == selected).FirstOrDefault();
+            if (state == null) return;
+            TrimHidden(false);
+            state.Requested = false;
+            if (budget.Available == 0) TrimHidden(true);
+            long allowance = Math.Min(256L * 1024 * 1024, budget.Available);
+            if (allowance == 0) { state.AllowRemote = false; Status("PreviewBudgetFull"); return; }
+            activeLease = budget.Reserve(allowance);
+            activeState = state; activeGeneration = state.LoadGeneration;
+            activeAllowRemote = state.AllowRemote;
+            activeReference = state.Notice.Get("image"); activeCancellation = new CancellationTokenSource();
+            LoadCount++;
+            activeLoad = new ImageResolver(document.File.PathName, settings.ExtraImageFolder)
+                .LoadAsync(activeReference, false, state.AllowRemote, activeCancellation.Token, allowance);
+            state.AllowRemote = false;
         }
-        private bool IsCurrent(PreviewState state) { PreviewState current; return previews.TryGetValue(state.Notice.Id, out current) && ReferenceEquals(current, state); }
-        private void OnUi(Action action)
+        internal void ProcessPreviewWork(object sender, EventArgs e)
         {
-            if (closing || IsDisposed || !IsHandleCreated) return;
-            try { BeginInvoke(new Action(() => { if (!closing && !IsDisposed) action(); })); }
-            catch (InvalidOperationException) { }
+            if (closing) return;
+            if (activeLoad?.IsCompleted == true)
+            {
+                var state = activeState;
+                var lease = activeLease;
+                try
+                {
+                    var result = activeLoad.GetAwaiter().GetResult();
+                    if (!activeCancellation.IsCancellationRequested && IsCurrent(state) && Needed(state) && state.LoadGeneration == activeGeneration)
+                    {
+                        var bytes = PreviewBudget.Bytes(result.Item1);
+                        lease.Shrink(bytes);
+                        state.SourceLease?.Dispose(); state.SourceLease = lease; lease = null;
+                        state.Image = result.Item1; state.ImageRevision++;
+                        state.Path = string.IsNullOrEmpty(activeReference) ? T("NoImage") : result.Item1 == null ? T("MissingImage", activeReference) : result.Item2;
+                        state.Loaded = true; state.RenderDirty = true;
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    if (IsCurrent(state) && Needed(state) && state.LoadGeneration == activeGeneration)
+                    {
+                        state.Path = T(ex.Message) == ex.Message ? T("FileProblem") : T(ex.Message);
+                        if (state.Notice == selected) imagePath.Text = state.Path;
+                        if (ex.Message == "PreviewBudgetFull")
+                        {
+                            long available = budget.Available; TrimHidden(true);
+                            if (budget.Available > available) { state.Requested = true; state.AllowRemote = activeAllowRemote; }
+                            else Status("PreviewBudgetFull");
+                        }
+                        else { state.SourceLease?.Dispose(); state.SourceLease = null; state.Image = null; state.ImageRevision++; state.Loaded = true; state.RenderDirty = true; }
+                    }
+                }
+                finally
+                {
+                    lease?.Dispose(); activeLease = null; activeLoad = null; activeState = null;
+                    activeCancellation.Dispose(); activeCancellation = null;
+                }
+            }
+            foreach (var state in previews.Values.ToArray())
+            {
+                if (activeLoad != null) break;
+                if (!state.RenderDirty) continue;
+                state.RenderDirty = false;
+                if (Needed(state) && state.Loaded) RenderState(state);
+            }
+            StartNextLoad();
+            if (!WorkPending) workTimer.Stop();
         }
         private void Render() { if (selected != null) RenderState(State(selected)); }
         private void RenderState(PreviewState state)
         {
+            if (!state.Loaded) return;
+            if (activeLoad != null) { state.RenderDirty = true; workTimer.Start(); return; }
+            state.RenderDirty = false;
+            PreviewBudget.Lease lease = null;
             try
             {
                 double size = Notice.Number(state.Notice.Get("scale"), document.Default(state.Notice, "scale", 1));
-                state.Rendered = NoticePreview.Render(state.Image, size, T("MissingImage", state.Notice.Get("image")));
+                string missing = state.Image == null ? T("MissingImage", state.Notice.Get("image")) : "";
+                if (state.Rendered == null || state.RenderRevision != state.ImageRevision || state.RenderScale != size || state.RenderText != missing)
+                {
+                    lease = Reserve(NoticePreview.RenderBytes(state.Image, size));
+                    if (lease == null) { Status("PreviewBudgetFull"); return; }
+                    var next = NoticePreview.Render(state.Image, size, missing); RenderCount++;
+                    if (state.Notice == selected) SetCanvas(null);
+                    state.Rendered = next; UpdatePreview(state);
+                    state.RenderLease?.Dispose(); state.RenderLease = lease; lease = null;
+                    state.RenderRevision = state.ImageRevision; state.RenderScale = size; state.RenderText = missing;
+                }
+                else SkippedRenders++;
                 if (state.Notice == selected)
                 {
-                    rendered = state.Rendered; imagePath.Text = state.Path; canvas.SetImage(rendered); UpdatePosition();
+                    imagePath.Text = state.Path; SetCanvas(state.Rendered); UpdatePosition();
                 }
                 else UpdatePreview(state);
             }
-            catch (Exception ex) { state.Rendered = null; if (state.Notice == selected) { rendered = null; canvas.SetImage(null); } UpdatePreview(state); Error(ex); }
+            catch (Exception ex) { Error(ex); }
+            finally { lease?.Dispose(); }
         }
         private PointF Position(PreviewState state)
         {
@@ -307,9 +436,14 @@ namespace TimelineNoticeEditor
             if (disposing)
             {
                 closing = true;
-                lock (imageTaskGate) foreach (var state in previews.Values) { state.Cancellation?.Cancel(); state.Window?.Close(); }
-                Task[] pending; lock (imageTaskGate) pending = imageTasks.ToArray();
-                try { Task.WaitAll(pending); } catch (AggregateException) { }
+                workTimer.Stop(); workTimer.Tick -= ProcessPreviewWork; workTimer.Dispose();
+                activeCancellation?.Cancel();
+                try { activeLoad?.GetAwaiter().GetResult(); } catch (Exception) { }
+                activeLoad = null; activeState = null; activeLease?.Dispose(); activeLease = null;
+                activeCancellation?.Dispose(); activeCancellation = null;
+                SetCanvas(null);
+                foreach (var state in previews.Values) { ReleaseState(state); state.Window?.Close(); }
+                previews.Clear();
             }
             base.Dispose(disposing);
         }

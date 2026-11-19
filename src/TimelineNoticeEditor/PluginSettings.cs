@@ -8,6 +8,8 @@ namespace TimelineNoticeEditor
     public sealed class PluginSettings
     {
         public string Language { get; set; }
+        internal string HostedLanguage { get; set; }
+        internal string EffectiveLanguage => HostedLanguage ?? Language;
         public string TimelineFolder { get; set; } = "";
         public string ExtraImageFolder { get; set; } = "";
         public bool CheckUpdatesOnStartup { get; set; } = true;

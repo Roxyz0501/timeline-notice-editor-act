@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace TimelineNoticeEditor
 {
-    internal sealed class UpdateService : IDisposable
+    internal sealed partial class UpdateService : IDisposable
     {
         private const long MaximumDownloadBytes = 100L * 1024 * 1024;
         private readonly HttpClient client;
@@ -29,19 +29,15 @@ namespace TimelineNoticeEditor
                 return new UpdateCheckResult { Status = UpdateCheckStatus.RepositoryNotConfigured };
             try
             {
-                EnsureAllowedUri(new Uri(UpdateConfiguration.ReleasesApiUrl), true);
-                return await CheckFromFetcherAsync(async () =>
+                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    using (var response = await client.GetAsync(UpdateConfiguration.ReleasesApiUrl, cancellationToken).ConfigureAwait(false))
-                    {
-                        response.EnsureSuccessStatusCode();
-                        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    }
-                }, currentVersion).ConfigureAwait(false);
+                    deadline.CancelAfter(TimeSpan.FromSeconds(30));
+                    return await CheckLatestAsync(currentVersion, deadline.Token).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
-                return new UpdateCheckResult { Status = UpdateCheckStatus.Failed, Error = ex.GetBaseException().Message };
+                return new UpdateCheckResult { Status = UpdateCheckStatus.Failed, Error = ex is UpdateLimitException ? "CheckLimited" : "CheckFailed" };
             }
         }
 
@@ -92,6 +88,8 @@ namespace TimelineNoticeEditor
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (release == null) throw new ArgumentNullException("release");
+            SemVersion tagVersion;
+            if (!TryStableTag(release.Tag, out tagVersion) || release.Version == null || tagVersion.ToString() != release.Version.ToString()) throw new InvalidDataException("InvalidPackage");
             var expectedZip = "TimelineNoticeEditor-v" + release.Version + ".zip";
             var alternateZip = "TimelineNoticeEditor-" + release.Version + ".zip";
             var zip = release.Assets.FirstOrDefault(x => string.Equals(x.Name, expectedZip, StringComparison.OrdinalIgnoreCase) || string.Equals(x.Name, alternateZip, StringComparison.OrdinalIgnoreCase));
@@ -102,7 +100,7 @@ namespace TimelineNoticeEditor
             if (zip == null || manifest == null) throw new InvalidDataException("UpdateAssetMissing");
             var assetPrefix = "https://github.com/" + UpdateConfiguration.RepositoryOwner + "/" + UpdateConfiguration.RepositoryName + "/releases/download/" + release.Tag + "/";
             if (!string.Equals(zip.DownloadUrl, assetPrefix + zip.Name, StringComparison.Ordinal) || !string.Equals(manifest.DownloadUrl, assetPrefix + manifest.Name, StringComparison.Ordinal)) throw new InvalidDataException("InvalidPackage");
-            if (zip.Size <= 0 || zip.Size > MaximumDownloadBytes || manifest.Size > 1024 * 1024) throw new InvalidDataException("InvalidPackage");
+            if ((zip.Size <= 0 && !release.OfficialFallback) || zip.Size > MaximumDownloadBytes || manifest.Size > 1024 * 1024) throw new InvalidDataException("InvalidPackage");
 
             var root = Path.Combine(Path.GetTempPath(), "TimelineNoticeEditorUpdater", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -111,7 +109,7 @@ namespace TimelineNoticeEditor
             var zipPath = Path.Combine(root, "package.zip");
             var manifestPath = Path.Combine(root, "package.sha256");
             await DownloadAsync(zip.DownloadUrl, zipPath, cancellationToken).ConfigureAwait(false);
-            await DownloadAsync(manifest.DownloadUrl, manifestPath, cancellationToken).ConfigureAwait(false);
+            await DownloadAsync(manifest.DownloadUrl, manifestPath, cancellationToken, 1024 * 1024).ConfigureAwait(false);
             var expected = UpdatePackageVerifier.FindManifestHash(File.ReadAllText(manifestPath, Encoding.UTF8), zip.Name);
             if (!UpdatePackageVerifier.VerifySha256(zipPath, expected)) throw new InvalidDataException("HashFailed");
 
@@ -124,7 +122,7 @@ namespace TimelineNoticeEditor
             UpdatePackageVerifier.ValidatePluginAssembly(dll, release.Version);
             UpdatePackageVerifier.ValidateUpdaterAssembly(updater, release.Version);
             cancellationToken.ThrowIfCancellationRequested();
-            return new PreparedUpdate { StagedDllPath = dll, StagedUpdaterPath = updater, DllSha256 = UpdatePackageVerifier.ComputeSha256(dll), Release = release };
+            return new PreparedUpdate { StagedDllPath = dll, StagedUpdaterPath = updater, DllSha256 = UpdatePackageVerifier.ComputeSha256(dll), UpdaterSha256 = UpdatePackageVerifier.ComputeSha256(updater), Release = release };
             }
             catch
             {
@@ -133,7 +131,7 @@ namespace TimelineNoticeEditor
             }
         }
 
-        private async Task DownloadAsync(string url, string destination, CancellationToken cancellationToken)
+        private async Task DownloadAsync(string url, string destination, CancellationToken cancellationToken, long limit = MaximumDownloadBytes)
         {
             var uri = new Uri(url);
             EnsureAllowedUri(uri, false);
@@ -148,12 +146,14 @@ namespace TimelineNoticeEditor
                 if (location == null) throw new InvalidDataException("InvalidPackage");
                 uri = location.IsAbsoluteUri ? location : new Uri(uri, location);
                 EnsureAllowedUri(uri, false);
+                if (uri.Host == "github.com" && !uri.AbsoluteUri.StartsWith(RepositoryUrl + "/releases/download/", StringComparison.Ordinal)) throw new InvalidDataException("Unexpected download repository");
             }
             if (response == null) throw new InvalidDataException("InvalidPackage");
             using (response)
             {
+                if ((int)response.StatusCode == 403 || (int)response.StatusCode == 429) throw new UpdateLimitException();
                 response.EnsureSuccessStatusCode();
-                if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value > MaximumDownloadBytes)
+                if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value > limit)
                     throw new InvalidDataException("InvalidPackage");
                 using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
                 using (var output = File.Create(destination))
@@ -164,7 +164,7 @@ namespace TimelineNoticeEditor
                     while ((read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
                     {
                         total += read;
-                        if (total > MaximumDownloadBytes) throw new InvalidDataException("InvalidPackage");
+                        if (total > limit) throw new InvalidDataException("InvalidPackage");
                         await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
                     }
                 }

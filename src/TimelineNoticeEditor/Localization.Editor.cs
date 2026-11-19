@@ -15,6 +15,10 @@ namespace TimelineNoticeEditor
         }
         private static void AddMultiPreviewResources()
         {
+            Add(English, "PreviewBudgetFull=Preview memory limit reached. Turn off other previews or lower the scale, then select this notice again. Existing previews are kept.");
+            Add(Japanese, "PreviewBudgetFull=プレビューのメモリ上限に達しました。他のプレビューをOFFにするか倍率を下げて、この通知を選び直してください。既存の表示は保持します。");
+            Add(Chinese, "PreviewBudgetFull=预览内存已达上限。请关闭其他预览或降低缩放比例，然后重新选择此通知。已有预览将保留。");
+            Add(Korean, "PreviewBudgetFull=미리보기 메모리 한도에 도달했습니다. 다른 미리보기를 끄거나 배율을 낮춘 후 이 알림을 다시 선택하세요. 기존 표시는 유지됩니다.");
             Add(English, "DesktopPreview=Preview selected notice|LockPreview=Lock all previews / click through|EditorHint=Check each notice to preview several images together. Drag each desktop image to edit its own position, then save all changes.|BackupUnavailable=Could not create a backup inside this plugin's Backups folder. Check the plugin registration and folder permissions; the XML was not saved.");
             Add(Japanese, "DesktopPreview=選択項目をプレビュー|LockPreview=全プレビューを固定・クリック透過|EditorHint=通知ごとのチェックで複数画像を同時に表示できます。各画像をドラッグして位置を調整し、まとめて保存してください。|BackupUnavailable=このプラグイン内のBackupsにバックアップを作成できません。ACTの登録先とフォルダの書き込み権限を確認してください。XMLは保存していません。");
             Add(Chinese, "DesktopPreview=预览所选通知|LockPreview=锁定全部预览／鼠标穿透|EditorHint=勾选各通知可同时预览多张图片。拖动各桌面图片调整其位置，再一次保存所有修改。|BackupUnavailable=无法在本插件的Backups文件夹中创建备份。请检查ACT注册路径及写入权限，XML未保存。");

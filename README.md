@@ -2,6 +2,8 @@
 
 SPESPE / ACT.HojoringのタイムラインXMLを開き、`i-notice`の画像を見ながら表示位置を調整するACTプラグインです。
 
+v1.1.2では複数プレビューの画像バッファを合計256MiBまでに制限します。非表示画像は最大4件・8MiBまで再利用し、古いものから解放します。上限に達した場合は表示中の画像を保持したまま案内します。他のプレビューをOFFにして対象を選び直してください。倍率の表示更新は80ms周期に集約し、変更値は即時反映します。[計測結果と予算の範囲](https://github.com/Roxyz0501/timeline-notice-editor-act/blob/v1.1.2/PREVIEW_PERFORMANCE.md)を参照してください。
+
 v1.1.1では設定を60秒周期で差分保存し、正常終了時に最終保存します。更新通信や画像読み込みを終了前にキャンセルして完了を待ち、再読み込み前の画面更新を防ぎます。強制終了・電源断では最後の保存以後の設定変更が失われることがあります。タイムラインXMLは従来どおり保存ボタンで保存します。
 
 ## インストール
@@ -60,7 +62,7 @@ Releaseのファイル名は`TimelineNoticeEditor-vX.Y.Z.zip`と`TimelineNoticeE
 - `TimelineNoticeEditor.Updater.exe`
 - `README.md`
 
-更新パッケージは明示操作時に検証して一時フォルダへ展開します。終了後も動作する補助アップデータは起動しません。表示された検証済みDLLのパスを確認し、ACTを終了してからプラグインDLLを手動で置き換えてください。
+「更新する」でパッケージと補助アップデータを検証し、ACTの終了を待ちます。終了後に実登録先DLLをバックアップして自動置換し、失敗時は復元します。準備後に登録先DLLが変更されていれば中止します。補助アップデータだけが終了後処理の例外で、置換または失敗後に終了します。完了後はACTを再起動してください。更新タブに作者・現在版・GitHubリンクを表示し、4言語のタブは共通PluginTabs.csを使用します。
 
 ## ビルド・テスト・Release
 
@@ -89,3 +91,15 @@ An ACT plugin for selecting SPESPE timeline notices, resolving their referenced 
 ## Compatibility references
 
 Behavior was checked against the public Hojoring implementation: [image notices](https://github.com/anoyetta/ACT.Hojoring/blob/master/source/ACT.SpecialSpellTimer/ACT.SpecialSpellTimer.Core/RaidTimeline/TimelineImageNoticeModel.cs), [image overlay](https://github.com/anoyetta/ACT.Hojoring/blob/master/source/ACT.SpecialSpellTimer/ACT.SpecialSpellTimer.Core/RaidTimeline/Views/TimelineImageNoticeOverlay.xaml), [visual overlay](https://github.com/anoyetta/ACT.Hojoring/blob/master/source/ACT.SpecialSpellTimer/ACT.SpecialSpellTimer.Core/RaidTimeline/Views/TimelineNoticeOverlay.xaml). Hojoring source, timelines, images and ACT binaries are not distributed in this repository. No license has been selected for this new project.
+
+### GitHub API利用制限への対応
+
+起動時設定がONの場合と「今すぐ確認」の操作時だけ、専用リポジトリの `releases/latest` をHEADで確認します。同版・インストール済み版が新しい場合はREST APIを呼びません。更新ありの場合だけAPIで更新内容を取得します。403/429でも公式latestで検証済みの安定版タグを保持し、明示操作でタグ固定ZIP・SHA-256をダウンロードして従来と同じ検証・自動置換を行います。HTTP制限と通常の通信失敗は4言語で区別します。自動リトライ・定期ポーリングはありません。API本文は4MiB、ZIPは100MiB、マニフェストは1MiBまでに制限します。
+
+模擬HTTPの実測: 同版 HEAD 1回／API 0回／配布物0回。更新あり HEAD 1回／API 1回／確認時の配布物0回。API 403/429の更新準備ではZIP・SHA-256各1回、API再試行0回。不正な転送先・プレリリースタグ・破損配布物の拒否も検証しています。公開Releaseとの実通信検証は別に行います。
+
+### ポータルと言語タブ
+
+単体では「編集」「言語」「更新」「支援」を表示します。言語は専用タブで切り替え、支援は機能タブ追加後も右端です。共通の `PluginTabs.cs`、`PluginLanguagePage.cs`、`PluginUpdatePage.cs` を同一ソースで使用しています。
+
+ポータルはACTエントリーの `SetHostedLanguage(string code)` に `en`／`ja`／`zh-CN`／`ko` を渡せます。表示言語だけをメモリ上で上書きし、単体で保存した言語は変更しません。設定、通知、画像なしプレビューの文言へ即時反映します。ホスト側で言語・更新・支援タブを非表示にでき、再読み込み時は保存済みの単体言語に戻ります。
